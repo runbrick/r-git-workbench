@@ -1,0 +1,25 @@
+# Local Go workspace files
+go.work
+go.work.sum
+
+# Build and package output
+/bin/
+/build/
+/dist/
+*.exe
+*.test
+*.out
+
+# Coverage and profiling
+coverage*.txt
+coverage*.html
+*.prof
+*.pprof
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
