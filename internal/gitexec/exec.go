@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,8 @@ type Command struct {
 	Stdin   io.Reader
 	Write   bool
 	Timeout time.Duration
+	// OutputLimit bounds captured stdout. Zero uses the default 64 MiB limit.
+	OutputLimit int
 }
 
 type Result struct {
@@ -28,6 +31,30 @@ type Result struct {
 
 type Runner struct {
 	Path string
+}
+
+const (
+	defaultOutputLimit = 64 << 20
+	stderrLimit        = 1 << 20
+)
+
+// limitedOutput drains all process output while retaining only the first limit bytes.
+// Draining prevents Git from blocking on a full pipe when output is truncated.
+type limitedOutput struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (output *limitedOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := output.limit - output.buffer.Len()
+	if remaining < n {
+		output.truncated = true
+		p = p[:max(remaining, 0)]
+	}
+	_, _ = output.buffer.Write(p)
+	return n, nil
 }
 
 func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
@@ -45,22 +72,60 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 	args := make([]string, 0, len(command.Args)+4)
 	args = append(args, "-c", "core.quotepath=false", "-c", "color.ui=false")
 	args = append(args, command.Args...)
-	process := exec.CommandContext(ctx, runner.Path, args...)
+	process := exec.Command(runner.Path, args...)
+	configureProcess(process)
 	process.Dir = command.Dir
 	process.Stdin = command.Stdin
 	process.Env = overrideEnv(os.Environ(), command.Write)
-	var stdout, stderr bytes.Buffer
+	if err := ctx.Err(); err != nil {
+		return Result{ExitCode: -1}, err
+	}
+	limit := command.OutputLimit
+	if limit <= 0 {
+		limit = defaultOutputLimit
+	}
+	stdout, stderr := limitedOutput{limit: limit}, limitedOutput{limit: stderrLimit}
 	process.Stdout = &stdout
 	process.Stderr = &stderr
-	err := process.Run()
-	result := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+	err := process.Start()
+	if err == nil {
+		done := make(chan struct{})
+		stopped := make(chan struct{})
+		var state sync.Mutex
+		finished := false
+		go func() {
+			defer close(stopped)
+			select {
+			case <-ctx.Done():
+				state.Lock()
+				if !finished {
+					terminateProcess(process)
+				}
+				state.Unlock()
+			case <-done:
+			}
+		}()
+		err = process.Wait()
+		state.Lock()
+		finished = true
+		state.Unlock()
+		close(done)
+		<-stopped
+	}
+	result := Result{Stdout: stdout.buffer.Bytes(), Stderr: stderr.buffer.Bytes()}
 	if err != nil {
 		result.ExitCode = -1
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			result.ExitCode = exit.ExitCode()
 		}
+		if stdout.truncated || stderr.truncated {
+			return result, fmt.Errorf("git %s output exceeded capture limit (stdout %d, stderr %d bytes): %w", command.Args[0], limit, stderrLimit, err)
+		}
 		return result, fmt.Errorf("git %s: %w", command.Args[0], err)
+	}
+	if stdout.truncated || stderr.truncated {
+		return result, fmt.Errorf("git %s output exceeded capture limit (stdout %d, stderr %d bytes)", command.Args[0], limit, stderrLimit)
 	}
 	return result, nil
 }

@@ -31,6 +31,8 @@ var (
 
 ## 3. 主窗口结构
 
+Rebased 参考布局（参考 `DetachHead/rebased` README 截图，2026-11-06）：默认深色紧凑工具栏；窄图标导航轨道与常驻 Changes/多行 Commit 面板并列；Log 占主区域，按主题、作者、日期、短 SHA 查看历史；右侧显示提交文件、文件 Diff 和详情。当前应用按此结构重排已有工作流，并在 Log 表格图列绘制父提交轨道。图标使用从 Lucide SVG 编译的 Go 矢量资源，不引入发布依赖。Rebased 是 IntelliJ Community 派生客户端，复制其屏幕结构不等于已经具备它的全部 Git 和平台功能；功能差距逐项记录于 ROADMAP。
+
 对应规格 §3：
 
 ```text
@@ -54,6 +56,8 @@ shell.View
 | 菜单 | `components.ContextMenu`、`components.DropdownMenu` |
 | 对话框 | `components.Dialog`、`components.AlertDialog`（有损确认） |
 | 通知 | `components.Sonner` / `Toast`（非阻断）；需要用户处理的错误用对话框（规格 §3） |
+
+当前 Branches 页面按 Local / Remote 分组显示引用和 upstream，提供本地分支创建及切换按钮；点击引用行打开按该引用筛选的 Log。Recent、搜索、分支重命名/删除、覆盖时的交互对话框仍待实现。分支页刷新按钮与常驻 Changes 侧栏刷新按钮使用不同的 `ui.Tree` 身份。
 
 ## 4. 视图状态记忆
 

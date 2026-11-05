@@ -48,6 +48,9 @@
 | 提交详情 | `show -z --format=... --name-status --find-renames <sha>` |
 | 文件 Diff | `diff --no-color --no-ext-diff -U3 [--cached] [-w] -- <path>`；比较提交时 `diff <a> <b> -- <path>` |
 | 文件内容 | `cat-file --batch`（长驻进程，Log/Diff 浏览期间复用，空闲 30 秒后关闭） |
+
+当前 M2 增量：Log 按 100 条分页，提交消息以 `--fixed-strings --regexp-ignore-case --grep=<消息>`、作者以 `--author=<名称>`、路径以 `-- <路径>` 在 Git 中筛选后分页；提交文件通过 `ls-tree` 确认父提交/当前提交是否包含该路径，再读取两侧对象，根提交以空内容为基准；合并提交的文件列表与 Diff 相对第一父提交。大文件和二进制文件回退显示 Git patch。图形目前按父 SHA 在 UI 绘制至多六条轨道；日期/分支筛选、复杂图折叠和持久 `cat-file --batch` 尚待实现。
+当前 M3 增量：`for-each-ref` 读取本地/远程引用及 upstream，选定完整引用后限定 Log；新建分支先用 `check-ref-format --branch` 验证，再执行 `branch`；切换前校验本地引用存在，再执行无 force 的 `switch -- <name>`。所有写操作由仓库互斥锁串行，切换时若工作区修改会被覆盖，Git 拒绝且保持原状态。覆盖时的 Stash/Force 交互、远程 checkout、重命名、删除和 upstream 管理仍待实现。
 | 冲突三方 | `show :1:<path>` / `:2:` / `:3:`，或从 `ls-files -u -z` 读取 stage |
 | Stash | `stash list -z --format=...`；`stash show -p --include-untracked` |
 | 配置 | `config --list --show-origin --show-scope -z` |
@@ -102,6 +105,8 @@
 - 客户端自己的写操作期间暂停事件驱动刷新，结束后统一刷新一次，避免操作过程中的中间状态闪现。
 - 窗口不可见或最小化时继续收集事件但不刷新，恢复可见时刷新一次。
 - 去抖计时器只在有事件时存在，空闲时没有定时器（Viva 规则）。
+
+M1 当前实现：Windows 使用阻塞的 `ReadDirectoryChangesW`，Linux 使用 inotify + epoll 监听工作树和 Git 目录；事件经 300 ms 合并后刷新整个 Status。切换仓库取消旧监听，监听就绪时再读一次状态。macOS 目录监听、按路径部分刷新、忽略路径过滤以及 Linux 运行中新目录注册失败的通知尚未实现；初次注册失败会在界面显示错误，仍可手动刷新。Git 子进程在 Linux/macOS 使用独立进程组，取消时终止该组；Windows 当前仅终止直接进程，Job Object 仍待实现。
 
 ## 8. Log 图布局
 

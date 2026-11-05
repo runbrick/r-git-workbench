@@ -1,14 +1,17 @@
 package shell
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/ui"
 
+	"r-git-workbench/internal/git"
 	"r-git-workbench/internal/i18n"
 	"r-git-workbench/internal/keymap"
+	"r-git-workbench/internal/repo"
 )
 
 func TestNavigationIsNamedAndSwitchesViews(t *testing.T) {
@@ -46,6 +49,36 @@ func TestNavigationIsNamedAndSwitchesViews(t *testing.T) {
 		if hit.Label == "" || tree.Text(hit.ID) == "" {
 			t.Fatalf("unnamed control: %+v", hit)
 		}
+	}
+}
+
+func TestLogTableOnlyDeclaresVisibleRows(t *testing.T) {
+	m := New(i18n.English)
+	m.Active = keymap.ShowLog
+	m.repository = new(repo.Repository)
+	m.commits = make([]git.Commit, 10000)
+	for i := range m.commits {
+		m.commits[i] = git.Commit{SHA: fmt.Sprintf("%040x", i+1), Subject: "commit"}
+	}
+	m.logSource.commits = m.commits
+	for _, size := range [][2]int{{1200, 760}, {720, 480}} {
+		driver, err := app.NewDriver(m.Config(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := driver.Resize(size[0], size[1]); err != nil {
+			t.Fatal(err)
+		}
+		visible := 0
+		for _, hit := range driver.Snapshot().Hits {
+			if _, ok := hit.ID.In(logScope); ok {
+				visible++
+			}
+		}
+		if visible < 1 || visible > 45 {
+			t.Errorf("%v: %d visible rows from 10000 commits", size, visible)
+		}
+		driver.Close()
 	}
 }
 

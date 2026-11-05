@@ -2,6 +2,7 @@ package gitexec
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -26,6 +27,35 @@ func TestRunnerVersionAndEnvironment(t *testing.T) {
 	}
 	if contains(overrideEnv([]string{"GIT_OPTIONAL_LOCKS=0"}, true), "GIT_OPTIONAL_LOCKS=0") {
 		t.Fatal("write command inherited read-only locking behavior")
+	}
+}
+
+func TestRunnerOutputLimit(t *testing.T) {
+	path, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	runner := Runner{Path: path}
+	result, err := runner.Run(context.Background(), Command{Args: []string{"version"}, OutputLimit: 4})
+	if err == nil || !strings.Contains(err.Error(), "capture limit") || len(result.Stdout) != 4 {
+		t.Fatalf("limited output: %+v, %v", result, err)
+	}
+	result, err = runner.Run(context.Background(), Command{Args: []string{"version"}})
+	if err != nil || !strings.HasPrefix(string(result.Stdout), "git version ") {
+		t.Fatalf("subsequent command: %+v, %v", result, err)
+	}
+}
+
+func TestRunnerDoesNotStartCanceledCommand(t *testing.T) {
+	path, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := (Runner{Path: path}).Run(ctx, Command{Args: []string{"version"}})
+	if !errors.Is(err, context.Canceled) || result.ExitCode != -1 || len(result.Stdout) != 0 {
+		t.Fatalf("canceled command: %+v, %v", result, err)
 	}
 }
 
