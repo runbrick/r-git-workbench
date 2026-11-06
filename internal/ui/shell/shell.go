@@ -76,67 +76,74 @@ var (
 )
 
 type Model struct {
-	Language           i18n.Language
-	Active             keymap.ActionID
-	Git                git.Installation
-	DetectionErr       error
-	Checking           bool
-	view               flex.View
-	mailbox            workbench.Session
-	invalidator        app.Invalidator
-	path               flex.Field
-	branchName         flex.Field
-	localBranchName    flex.Field
-	branchRenameOld    string
-	message            commitDraft
-	logQuery           flex.Field
-	logAuthor          flex.Field
-	logPath            flex.Field
-	logFilter          repo.LogFilter
-	repository         *repo.Repository
-	status             git.Status
-	selected           int
-	selectedStaged     bool
-	diff               string
-	comparison         repo.FileDiff
-	aligned            components.CodeDiffResult
-	codeDiff           components.CodeDiff
-	diffSlot           flex.Box
-	showComparison     bool
-	busy               bool
-	operationError     string
-	showErrorDetails   bool
-	request            uint64
-	openRequest        uint64
-	ctx                context.Context
-	width              float32
-	height             float32
-	watchCancel        context.CancelFunc
-	watchPending       bool
-	commits            []git.Commit
-	logTable           flex.TableState
-	logSource          commitRows
-	logTableBounds     flex.Box
-	logColumns         [5]components.TableColumn
-	graphRows          []graphRow
-	refs               []git.Ref
-	deletePlan         *repo.BranchDeletePlan
-	deletePending      string
-	refsRequest        uint64
-	logLoading         bool
-	logHasMore         bool
-	logRequest         uint64
-	detailsRequest     uint64
-	selectedCommit     string
-	commitMessage      string
-	commitFiles        []string
-	selectedCommitFile string
-	commitFileRequest  uint64
-	commitFileDiff     repo.FileDiff
-	commitFileAligned  components.CodeDiffResult
-	commitFileReady    bool
-	commitDiff         components.CodeDiff
-	commitDiffSlot     flex.Box
+	Language             i18n.Language
+	Active               keymap.ActionID
+	Git                  git.Installation
+	DetectionErr         error
+	Checking             bool
+	view                 flex.View
+	mailbox              workbench.Session
+	invalidator          app.Invalidator
+	path                 flex.Field
+	branchName           flex.Field
+	localBranchName      flex.Field
+	branchRenameOld      string
+	message              commitDraft
+	logQuery             flex.Field
+	logAuthor            flex.Field
+	logPath              flex.Field
+	logFilter            repo.LogFilter
+	repository           *repo.Repository
+	status               git.Status
+	selected             int
+	selectedStaged       bool
+	diff                 string
+	comparison           repo.FileDiff
+	aligned              components.CodeDiffResult
+	codeDiff             components.CodeDiff
+	diffSlot             flex.Box
+	showComparison       bool
+	busy                 bool
+	activeOperation      string
+	operationError       string
+	showErrorDetails     bool
+	request              uint64
+	openRequest          uint64
+	ctx                  context.Context
+	width                float32
+	height               float32
+	watchCancel          context.CancelFunc
+	watchPending         bool
+	commits              []git.Commit
+	logTable             flex.TableState
+	logSource            commitRows
+	logTableBounds       flex.Box
+	logColumns           [5]components.TableColumn
+	graphRows            []graphRow
+	refs                 []git.Ref
+	deletePlan           *repo.BranchDeletePlan
+	deletePending        string
+	checkoutPlan         *repo.RemoteCheckoutPlan
+	confirmForceCheckout bool
+	remoteCancel         context.CancelFunc
+	remoteProgress       string
+	forcePushPlan        *repo.ForcePushPlan
+	confirmForcePush     bool
+	refsRequest          uint64
+	logLoading           bool
+	logHasMore           bool
+	logRequest           uint64
+	detailsRequest       uint64
+	selectedCommit       string
+	commitMessage        string
+	commitFiles          []string
+	selectedCommitFile   string
+	commitFileRequest    uint64
+	commitFileDiff       repo.FileDiff
+	commitFileAligned    components.CodeDiffResult
+	commitFileReady      bool
+	commitDiff           components.CodeDiff
+	commitDiffSlot       flex.Box
 }
 
 type commitRows struct{ commits []git.Commit }
@@ -227,6 +234,7 @@ func (m *Model) refresh() {
 		return
 	}
 	m.busy = true
+	m.activeOperation = "refresh"
 	m.mailbox.Refresh(m.ctx, m.repository, m.invalidator.Invalidate)
 }
 
@@ -301,12 +309,26 @@ func (m *Model) selectFile(index int, staged bool) {
 }
 
 func (m *Model) write(kind, path, message string) {
-	if m.repository == nil || m.busy {
+	if m.repository == nil || m.busy && m.activeOperation != "refresh" {
 		return
 	}
 	m.busy, m.operationError = true, ""
+	m.activeOperation = kind
 	m.showErrorDetails = false
 	m.mailbox.Write(m.ctx, m.repository, kind, path, message, m.invalidator.Invalidate)
+}
+
+func (m *Model) startRemote(operation string) {
+	if m.repository == nil || m.busy {
+		return
+	}
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.remoteCancel = cancel
+	m.remoteProgress = m.Language.Text(i18n.Working)
+	m.operationError = ""
+	m.busy = true
+	m.activeOperation = "remote-" + operation
+	m.mailbox.Remote(ctx, m.repository, operation, m.invalidator.Invalidate)
 }
 
 // SetInitialGit applies startup detection before the window thread begins.
@@ -409,6 +431,9 @@ func (m *Model) Config() app.Config {
 				if update.Kind == "refs" && update.Request != m.refsRequest {
 					continue
 				}
+				if update.Kind == "refresh" && m.activeOperation != "refresh" {
+					continue
+				}
 				if update.Kind == "commit-file" && (update.Request != m.commitFileRequest || update.Message != m.selectedCommit || update.Path != m.selectedCommitFile) {
 					continue
 				}
@@ -481,7 +506,35 @@ func (m *Model) Config() app.Config {
 						m.deletePlan = &update.BranchPlan
 					}
 					m.busy = false
-				case "rename-branch", "set-upstream", "checkout-remote", "delete-branch":
+					m.activeOperation = ""
+				case "remote-checkout-plan":
+					if update.Err == nil {
+						m.checkoutPlan = &update.CheckoutPlan
+						m.confirmForceCheckout = false
+					}
+					m.busy = false
+					m.activeOperation = ""
+				case "force-push-plan":
+					if update.Err == nil {
+						m.forcePushPlan = &update.PushPlan
+						m.confirmForcePush = false
+					}
+					m.busy = false
+					m.activeOperation = ""
+				case "checkout-remote":
+					if update.Status.Root != "" {
+						m.status = update.Status
+					}
+					if update.Err == nil {
+						m.checkoutPlan = nil
+						m.confirmForceCheckout = false
+						m.selected, m.diff, m.showComparison = -1, "", false
+						m.request++
+						m.loadRefs()
+						m.resetLog()
+						m.loadLog()
+					}
+				case "rename-branch", "set-upstream", "delete-branch":
 					if update.Err == nil {
 						m.loadRefs()
 						if update.Kind == "rename-branch" {
@@ -489,24 +542,40 @@ func (m *Model) Config() app.Config {
 							m.localBranchName.SetText("")
 							if m.logFilter.Ref == "refs/heads/"+update.Path {
 								m.logFilter.Ref = ""
-								m.resetLog()
-								m.loadLog()
 							}
 						}
 						if update.Kind == "delete-branch" {
 							m.deletePlan = nil
 						}
-					}
-					if update.Err == nil {
 						m.selected, m.diff, m.showComparison = -1, "", false
 						m.request++
-						m.loadRefs()
 						m.resetLog()
 						m.loadLog()
 					}
 				case "changed":
 					m.watchPending = true
+				case "remote-progress":
+					m.remoteProgress = update.Message
+				case "remote-fetch", "remote-pull", "remote-push":
+					if m.remoteCancel != nil {
+						m.remoteCancel()
+						m.remoteCancel = nil
+					}
+					m.remoteProgress = ""
+					if update.Status.Root != "" {
+						m.status = update.Status
+					}
+					if update.Err == nil {
+						m.loadRefs()
+						m.resetLog()
+						m.loadLog()
+						m.forcePushPlan = nil
+						m.confirmForcePush = false
+					}
 				default:
+					if update.Kind == "stage" || update.Kind == "unstage" || update.Kind == "commit" || update.Kind == "create-branch" || update.Kind == "switch-branch" {
+						m.watchPending = false
+					}
 					if update.Status.Root != "" {
 						unchanged := update.Kind == "refresh" && m.status.Root == update.Status.Root && m.status.Head == update.Status.Head && m.status.Branch == update.Status.Branch && slices.Equal(m.status.Files, update.Status.Files)
 						m.status = update.Status
@@ -523,8 +592,11 @@ func (m *Model) Config() app.Config {
 						m.loadRefs()
 					}
 				}
-				if update.Kind != "diff" && update.Kind != "changed" && update.Kind != "watch-error" && update.Kind != "log" && update.Kind != "commit-details" && update.Kind != "commit-file" && update.Kind != "refs" {
-					m.busy = false
+				if update.Kind != "diff" && update.Kind != "changed" && update.Kind != "watch-error" && update.Kind != "log" && update.Kind != "commit-details" && update.Kind != "commit-file" && update.Kind != "refs" && update.Kind != "remote-progress" {
+					if m.activeOperation == "" || update.Kind == m.activeOperation {
+						m.busy = false
+						m.activeOperation = ""
+					}
 				}
 			}
 			if m.watchPending && !m.busy && m.repository != nil {
@@ -607,9 +679,28 @@ func (m *Model) paintTop(f *flex.Frame) {
 		}
 		f.Spacer()
 		if m.width >= 900 {
-			f.Button(fetchID, text(i18n.Fetch)).Ghost().Small().Disabled(true)
-			f.Button(pullID, text(i18n.Pull)).Ghost().Small().Disabled(true)
-			f.Button(pushID, text(i18n.Push)).Ghost().Small().Disabled(true)
+			if m.busy && m.remoteCancel != nil {
+				if f.Button(fetchID, text(i18n.Cancel)).Ghost().Small().Clicked() {
+					m.remoteCancel()
+				}
+			} else {
+				if f.Button(fetchID, text(i18n.Fetch)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+					m.startRemote("fetch")
+				}
+				if f.Button(pullID, text(i18n.Pull)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+					m.startRemote("pull")
+				}
+				if f.Button(pushID, text(i18n.Push)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+					m.startRemote("push")
+				}
+				if f.Button(tree.ID(feature, "force-push"), text(i18n.ForcePushWithLease)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+					m.Active = keymap.ShowBranches
+					m.busy = true
+					m.activeOperation = "force-push-plan"
+					m.operationError = ""
+					m.mailbox.PlanForcePush(m.ctx, m.repository, m.invalidator.Invalidate)
+				}
+			}
 			f.Button(searchID, text(i18n.Search)).Ghost().Small().Disabled(true)
 		}
 	})
@@ -694,11 +785,96 @@ func (m *Model) paintBranches(f *flex.Frame) {
 					plan := *m.deletePlan
 					m.deletePlan = nil
 					m.busy = true
+					m.activeOperation = "delete-branch"
 					m.mailbox.DeleteBranch(m.ctx, m.repository, plan, m.invalidator.Invalidate)
 				}
 				if f.Button(tree.ID(feature, "cancel-delete-branch"), text(i18n.Cancel)).Ghost().Small().Clicked() {
 					m.deletePlan = nil
 				}
+			})
+		}
+		if m.checkoutPlan != nil {
+			f.Column().FillWidth().Gap(5).Pad(8).Background(ui.RGB(48, 43, 36)).Children(func() {
+				f.Text(fmt.Sprintf("%s %s -> %s", text(i18n.CheckoutChangesWarning), m.checkoutPlan.Remote, m.checkoutPlan.Local)).FontSize(12)
+				if len(m.checkoutPlan.DirtyFiles) == 0 {
+					f.Text(text(i18n.Ready)).Muted().FontSize(11)
+				} else {
+					f.ScrollArea(tree.ID(feature, "checkout-conflicting-files")).Height(min(float32(96), float32(len(m.checkoutPlan.DirtyFiles))*19)).Children(func() {
+						for _, path := range m.checkoutPlan.DirtyFiles {
+							f.Text(path).Mono().FontSize(11)
+						}
+					})
+				}
+				f.Row().FillWidth().Gap(6).Children(func() {
+					if len(m.checkoutPlan.DirtyFiles) == 0 {
+						if f.Button(tree.ID(feature, "checkout-confirm"), text(i18n.CheckoutRemoteBranch)).Small().Disabled(m.busy).Clicked() {
+							plan := *m.checkoutPlan
+							m.busy = true
+							m.activeOperation = "checkout-remote"
+							m.mailbox.ExecuteRemoteCheckout(m.ctx, m.repository, plan, repo.CheckoutSafe, m.invalidator.Invalidate)
+						}
+					} else {
+						if f.Button(tree.ID(feature, "checkout-stash"), text(i18n.StashAndCheckout)).Small().Disabled(m.busy).Clicked() {
+							plan := *m.checkoutPlan
+							m.checkoutPlan = nil
+							m.busy = true
+							m.activeOperation = "checkout-remote"
+							m.mailbox.ExecuteRemoteCheckout(m.ctx, m.repository, plan, repo.CheckoutStash, m.invalidator.Invalidate)
+						}
+						forceLabel := text(i18n.ForceCheckout)
+						if m.confirmForceCheckout {
+							forceLabel = text(i18n.ConfirmForceCheckout)
+						}
+						if f.Button(tree.ID(feature, "checkout-force"), forceLabel).Small().Disabled(m.busy).Clicked() {
+							if !m.confirmForceCheckout {
+								m.confirmForceCheckout = true
+							} else {
+								plan := *m.checkoutPlan
+								m.checkoutPlan = nil
+								m.confirmForceCheckout = false
+								m.busy = true
+								m.activeOperation = "checkout-remote"
+								m.mailbox.ExecuteRemoteCheckout(m.ctx, m.repository, plan, repo.CheckoutForce, m.invalidator.Invalidate)
+							}
+						}
+					}
+					if f.Button(tree.ID(feature, "checkout-cancel"), text(i18n.Cancel)).Ghost().Small().Clicked() {
+						m.checkoutPlan = nil
+						m.confirmForceCheckout = false
+						m.activeOperation = ""
+					}
+				})
+			})
+		}
+		if m.forcePushPlan != nil {
+			f.Column().FillWidth().Gap(5).Pad(8).Background(ui.RGB(48, 43, 36)).Children(func() {
+				f.Text(text(i18n.PushTargets)).FontSize(12)
+				f.Text(fmt.Sprintf("%s/%s  %s -> %s", m.forcePushPlan.Remote, m.forcePushPlan.Branch, m.forcePushPlan.Local[:min(8, len(m.forcePushPlan.Local))], m.forcePushPlan.Lease[:min(8, len(m.forcePushPlan.Lease))])).Mono().FontSize(11)
+				f.Row().FillWidth().Gap(6).Children(func() {
+					label := text(i18n.ForcePushWithLease)
+					if m.confirmForcePush {
+						label = text(i18n.ConfirmForcePush)
+					}
+					if f.Button(tree.ID(feature, "force-push-confirm"), label).Small().Disabled(m.busy).Clicked() {
+						if !m.confirmForcePush {
+							m.confirmForcePush = true
+						} else {
+							plan := *m.forcePushPlan
+							ctx, cancel := context.WithCancel(m.ctx)
+							m.remoteCancel = cancel
+							m.remoteProgress = text(i18n.Working)
+							m.forcePushPlan = nil
+							m.confirmForcePush = false
+							m.busy = true
+							m.activeOperation = "remote-push"
+							m.mailbox.ForcePush(ctx, m.repository, plan, m.invalidator.Invalidate)
+						}
+					}
+					if f.Button(tree.ID(feature, "force-push-cancel"), text(i18n.Cancel)).Ghost().Small().Clicked() {
+						m.forcePushPlan = nil
+						m.confirmForcePush = false
+					}
+				})
 			})
 		}
 		f.Divider()
@@ -737,6 +913,7 @@ func (m *Model) paintBranches(f *flex.Frame) {
 							}
 							if f.Button(tree.ID(feature, fmt.Sprintf("delete-branch-%d", i)), text(i18n.DeleteBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 								m.busy = true
+								m.activeOperation = "delete-branch-plan"
 								m.deletePlan = nil
 								m.mailbox.PlanDeleteBranch(m.ctx, m.repository, ref.Name, m.refsRequest, m.invalidator.Invalidate)
 							}
@@ -760,7 +937,10 @@ func (m *Model) paintBranches(f *flex.Frame) {
 								localName = localName[slash+1:]
 							}
 							if f.Button(tree.ID(feature, fmt.Sprintf("checkout-remote-%d", i)), text(i18n.CheckoutRemoteBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
-								m.write("checkout-remote", ref.FullName, ref.FullName+"\x00"+localName)
+								m.busy = true
+								m.activeOperation = "remote-checkout-plan"
+								m.operationError = ""
+								m.mailbox.PlanRemoteCheckout(m.ctx, m.repository, ref.FullName, localName, m.refsRequest, m.invalidator.Invalidate)
 							}
 						}
 					})
@@ -1095,7 +1275,11 @@ func (m *Model) paintStatus(f *flex.Frame) {
 				m.showErrorDetails = !m.showErrorDetails
 			}
 		} else if m.busy {
-			f.Text(text(i18n.Working)).Muted().FontSize(12)
+			label := text(i18n.Working)
+			if m.remoteProgress != "" {
+				label = m.remoteProgress
+			}
+			f.Text(label).Muted().FontSize(12)
 		}
 		switch {
 		case m.Checking:

@@ -25,22 +25,24 @@ type Session struct {
 }
 
 type Update struct {
-	Repository *repo.Repository
-	Status     git.Status
-	Diff       string
-	Comparison repo.FileDiff
-	Aligned    components.CodeDiffResult
-	Path       string
-	Staged     bool
-	Kind       string
-	Err        error
-	Request    uint64
-	Commits    []git.Commit
-	Skip       int
-	Message    string
-	Files      []string
-	Refs       []git.Ref
-	BranchPlan repo.BranchDeletePlan
+	Repository   *repo.Repository
+	Status       git.Status
+	Diff         string
+	Comparison   repo.FileDiff
+	Aligned      components.CodeDiffResult
+	Path         string
+	Staged       bool
+	Kind         string
+	Err          error
+	Request      uint64
+	Commits      []git.Commit
+	Skip         int
+	Message      string
+	Files        []string
+	Refs         []git.Ref
+	BranchPlan   repo.BranchDeletePlan
+	CheckoutPlan repo.RemoteCheckoutPlan
+	PushPlan     repo.ForcePushPlan
 }
 
 func (session *Session) Refs(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
@@ -150,7 +152,7 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			if len(parts) != 2 {
 				err = errors.New("invalid remote checkout request")
 			} else {
-				err = r.CheckoutRemoteBranch(ctx, parts[0], parts[1])
+				_, err = r.PlanCheckoutRemoteBranch(ctx, parts[0], parts[1])
 			}
 		}
 		status, refreshErr := r.Status(ctx)
@@ -158,6 +160,63 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			err = refreshErr
 		}
 		session.deliver(Update{Repository: r, Status: status, Path: path, Kind: kind, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanRemoteCheckout(ctx context.Context, r *repo.Repository, remote, local string, request uint64, notify func()) {
+	go func() {
+		plan, err := r.PlanCheckoutRemoteBranch(ctx, remote, local)
+		session.deliver(Update{Repository: r, Kind: "remote-checkout-plan", Path: local, CheckoutPlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) ExecuteRemoteCheckout(ctx context.Context, r *repo.Repository, plan repo.RemoteCheckoutPlan, mode repo.CheckoutMode, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.ExecuteCheckoutRemoteBranch(ctx, plan, mode)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Path: plan.Local, Kind: "checkout-remote", Err: err}, notify)
+	}()
+}
+
+func (session *Session) Remote(ctx context.Context, r *repo.Repository, operation string, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.Remote(ctx, operation, func(line string) {
+			session.deliver(Update{Repository: r, Kind: "remote-progress", Message: line}, notify)
+		})
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "remote-" + operation, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanForcePush(ctx context.Context, r *repo.Repository, notify func()) {
+	go func() {
+		plan, err := r.PlanForcePush(ctx)
+		session.deliver(Update{Repository: r, Kind: "force-push-plan", PushPlan: plan, Err: err}, notify)
+	}()
+}
+
+func (session *Session) ForcePush(ctx context.Context, r *repo.Repository, plan repo.ForcePushPlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.ExecuteForcePush(ctx, plan, func(line string) {
+			session.deliver(Update{Repository: r, Kind: "remote-progress", Message: line}, notify)
+		})
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "remote-push", Err: err}, notify)
 	}()
 }
 
