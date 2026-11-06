@@ -1,6 +1,6 @@
 # 界面层设计
 
-覆盖 `internal/ui/*`、`internal/keymap`、`internal/i18n`。Viva 编程模型见 `.claude/skills/building-with-viva/SKILL.md`。
+覆盖 `internal/ui/*`、`internal/keymap`、`internal/i18n`。Viva 编程模型见 `.claude/skills/building-with-viva/SKILL.md`。产品视觉基线是 `D:\privateProject\rebased` 固定基线截图；除品牌图标与名称外，布局和可见行为按 parity 验收。
 
 ## 1. 编程模型约定
 
@@ -31,9 +31,9 @@ var (
 
 ## 3. 主窗口结构
 
-Rebased 参考布局（参考 `DetachHead/rebased` README 截图，2026-11-06）：默认深色紧凑工具栏；窄图标导航轨道与常驻 Changes/多行 Commit 面板并列；Log 占主区域，按主题、作者、日期、短 SHA 查看历史；右侧显示提交文件、文件 Diff 和详情。当前应用按此结构重排已有工作流，并在 Log 表格图列绘制父提交轨道。图标使用从 Lucide SVG 编译的 Go 矢量资源，不引入发布依赖。Rebased 是 IntelliJ Community 派生客户端，复制其屏幕结构不等于已经具备它的全部 Git 和平台功能；功能差距逐项记录于 ROADMAP。
+Rebased parity 布局（基线 `245042348669114adb8e24e5b0fc0ce73763f3c4`）：顶部品牌/主菜单/仓库/分支/同步动作/搜索与设置；左侧窄工具窗轨道；常驻 Commit/Shelf Changes 面板；中央 Log 编辑区与分支侧栏；右侧提交文件树和详情。窗口采用紧凑暗色主题、细分隔线和低圆角；工具图标、文字密度、选择行、引用标签和分栏关系按基线截图逐项比对。仅替换 Rebased 品牌标识。图标优先用仓库已有矢量资源，不引入发布依赖。当前已采用该总体分区，但具体尺寸、菜单/工具栏、分支树、提交模式和若干面板交互仍需 parity 校准，详见 ROADMAP。
 
-对应规格 §3：
+对应规格 §3 与 Rebased parity 目标：
 
 ```text
 shell.View
@@ -57,7 +57,7 @@ shell.View
 | 对话框 | `components.Dialog`、`components.AlertDialog`（有损确认） |
 | 通知 | `components.Sonner` / `Toast`（非阻断）；需要用户处理的错误用对话框（规格 §3） |
 
-当前 Branches 页面按 Local / Remote 分组显示引用和 upstream，提供本地分支创建及切换按钮；点击引用行打开按该引用筛选的 Log。Recent、搜索、分支重命名/删除、覆盖时的交互对话框仍待实现。分支页刷新按钮与常驻 Changes 侧栏刷新按钮使用不同的 `ui.Tree` 身份。
+当前 Branches 页面按 Local / Remote 分组显示引用和 upstream，提供本地分支创建及切换按钮；点击引用行打开按该引用筛选的 Log。相对 Rebased 尚需补齐分支弹出树/最近分支/搜索与分组、提交模式和 Shelf 语义、工具窗轨道、右侧目录树细节、工具栏及设置入口、可调分栏行为，并逐项核对其余 Git 操作。分支页刷新按钮与常驻 Changes 侧栏刷新按钮使用不同的 `ui.Tree` 身份。
 
 ## 4. 视图状态记忆
 

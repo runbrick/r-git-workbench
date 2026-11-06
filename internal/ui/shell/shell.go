@@ -159,6 +159,10 @@ type Model struct {
 	commitFileReady      bool
 	commitDiff           components.CodeDiff
 	commitDiffSlot       flex.Box
+	changesSplit         flex.SplitterState
+	logBranchesSplit     flex.SplitterState
+	logDetailsSplit      flex.SplitterState
+	logBranchScope       ui.Scope
 }
 
 type commitRows struct {
@@ -191,7 +195,11 @@ func (rows *commitRows) Cell(row, column int) string {
 var compactCommitColumns = [...]components.TableColumn{{Width: 84}, {}}
 
 func New(language i18n.Language) *Model {
-	return &Model{Language: language, Active: keymap.ShowRepositories, Checking: true, selected: -1, ctx: context.Background()}
+	return &Model{
+		Language: language, Active: keymap.ShowRepositories, Checking: true, selected: -1, ctx: context.Background(),
+		changesSplit: flex.SplitterState{Pos: 300}, logBranchesSplit: flex.SplitterState{Pos: 150},
+		logDetailsSplit: flex.SplitterState{Pos: 310}, logBranchScope: tree.Sub(feature, tree.Name("log-branches")),
+	}
 }
 
 func (m *Model) SetContext(ctx context.Context) { m.ctx = ctx }
@@ -417,6 +425,11 @@ func (m *Model) Config() app.Config {
 			return m.view.Wheel(event)
 		},
 		OnKey: func(event ui.KeyEvent) ui.EventResult {
+			for _, split := range []*flex.SplitterState{&m.changesSplit, &m.logBranchesSplit, &m.logDetailsSplit} {
+				if result := split.Key(event); result.Handled {
+					return result
+				}
+			}
 			if event.Target == messageID {
 				return m.message.move(event)
 			}
@@ -692,8 +705,9 @@ func (m *Model) Config() app.Config {
 					m.paintNavigation(f)
 					f.Divider()
 					if m.repository != nil && m.Active != keymap.ShowRepositories {
-						m.paintChangesSidebar(f)
-						f.Divider()
+						changesWidth := min(max(m.changesSplit.Pos, float32(240)), max(float32(240), m.width*0.34))
+						f.Column().Width(changesWidth).FillHeight().Children(func() { m.paintChangesSidebar(f) })
+						f.Splitter(tree.ID(feature, "changes-split"), &m.changesSplit).Mins(230, 300)
 					}
 					m.paintContent(f)
 				})
@@ -726,10 +740,10 @@ func (m *Model) Config() app.Config {
 
 func (m *Model) paintTop(f *flex.Frame) {
 	text := m.Language.Text
-	f.Row().FillWidth().Height(44).PadX(12).Gap(12).Items(flex.Center).Background(ui.RGB(34, 36, 42)).Children(func() {
-		f.Text("G").Color(ui.RGB(255, 149, 55)).Bold().FontSize(17)
-		f.Text(text(i18n.AppName)).FontSize(13)
-		f.Divider().Height(18)
+	f.Row().FillWidth().Height(40).PadX(10).Gap(9).Items(flex.Center).Background(ui.RGB(34, 36, 42)).Children(func() {
+		f.Text("R").Color(ui.RGB(220, 122, 66)).Bold().FontSize(15)
+		f.Text(text(i18n.AppName)).FontSize(12)
+		f.Divider().Height(16)
 		label := text(i18n.OpenRepository)
 		if m.repository != nil {
 			label = filepath.Base(m.status.Root)
@@ -1126,10 +1140,14 @@ func remoteForBranch(refs []git.Ref, local string) string {
 
 func (m *Model) paintChangesSidebar(f *flex.Frame) {
 	text := m.Language.Text
-	width := min(float32(300), max(float32(210), (m.width-110)*0.28))
-	f.Column().Width(width).FillHeight().Background(ui.RGB(29, 31, 36)).Children(func() {
-		f.Row().FillWidth().Height(40).PadX(9).Gap(8).Items(flex.Center).Children(func() {
-			f.Text(text(i18n.CommitButton)).Bold().FontSize(13)
+	f.Column().FillHeight().Background(ui.RGB(29, 31, 36)).Children(func() {
+		f.Row().FillWidth().Height(38).PadX(8).Gap(4).Items(flex.Center).Children(func() {
+			if f.Button(tree.ID(feature, "commit-tab"), text(i18n.CommitButton)).Ghost().Small().Clicked() {
+				m.Active = keymap.ShowChanges
+			}
+			if f.Button(tree.ID(feature, "shelf-tab"), text(i18n.Stash)).Ghost().Small().Clicked() {
+				m.Active = keymap.ShowStash
+			}
 			f.Spacer()
 			if f.Button(refreshID, text(i18n.Refresh)).Ghost().Small().Disabled(m.busy).Clicked() {
 				m.refresh()
@@ -1216,14 +1234,55 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 func (m *Model) paintLog(f *flex.Frame) {
 	text := m.Language.Text
 	f.Row().Fill().Children(func() {
-		listWidth := max(float32(170), (m.width-min(float32(300), max(float32(210), (m.width-110)*0.28))-44)*0.60)
-		f.Column().Width(listWidth).FillHeight().Pad(8).Gap(8).Children(func() {
+		branchWidth := min(max(m.logBranchesSplit.Pos, float32(110)), max(float32(110), m.width*0.18))
+		showBranchSidebar := m.width >= 1000
+		if showBranchSidebar {
+			f.Column().Width(branchWidth).FillHeight().Pad(7).Gap(5).Background(ui.RGB(29, 31, 36)).Children(func() {
+				f.Text(text(i18n.Branches)).Bold().FontSize(11).Ellipsis()
+				f.ScrollArea(tree.ID(feature, "log-branches")).Grow(1).Children(func() {
+					localTitle, remoteTitle := false, false
+					for i, ref := range m.refs {
+						if ref.Tag {
+							continue
+						}
+						if ref.Remote && !remoteTitle {
+							f.Text(text(i18n.RemoteBranches)).Muted().FontSize(10).PadY(4)
+							remoteTitle = true
+						}
+						if !ref.Remote && !localTitle {
+							f.Text(text(i18n.LocalBranches)).Muted().FontSize(10).PadY(4)
+							localTitle = true
+						}
+						label := ref.Name
+						if !ref.Remote && ref.Name == m.status.Branch {
+							label = "● " + label
+						}
+						background := ui.RGB(29, 31, 36)
+						if m.logFilter.Ref == ref.FullName {
+							background = ui.RGB(44, 70, 116)
+						}
+						row := f.Row().FillWidth().Height(25).PadX(5).Background(background).
+							HoverBackground(ui.RGB(47, 51, 59)).HitWith(m.logBranchScope.At(i), ref.FullName,
+							ui.HitOptions{Role: ui.RoleButton, Hint: ref.SHA}).Children(func() {
+							f.Text(label).FontSize(11).Ellipsis()
+						})
+						if row.Clicked() {
+							m.logRef.SetText(ref.FullName)
+							m.applyLogFilter()
+						}
+					}
+				})
+			})
+			f.Splitter(tree.ID(feature, "log-branches-split"), &m.logBranchesSplit).Mins(105, 260)
+		}
+		f.Column().Grow(1).FillHeight().Pad(8).Gap(6).Children(func() {
+			listWidth := max(float32(250), m.width-branchWidth-350)
 			label := text(i18n.Log)
 			if m.logFilter.Ref != "" {
 				label = m.logFilter.Ref
 			}
 			f.Text(label).Bold().FontSize(14).PadY(4).Ellipsis()
-			f.Row().FillWidth().Gap(4).Children(func() {
+			f.Row().FillWidth().Height(29).Gap(4).Children(func() {
 				if f.Field(&m.logQuery, logFilterID, text(i18n.MessageFilter), text(i18n.MessageFilter)).Grow(1).Submitted() {
 					m.applyLogFilter()
 				}
@@ -1231,7 +1290,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.applyLogFilter()
 				}
 			})
-			f.Row().FillWidth().Gap(4).Children(func() {
+			f.Row().FillWidth().Height(26).Gap(4).Children(func() {
 				if f.Field(&m.logAuthor, logAuthorID, text(i18n.AuthorFilter), text(i18n.AuthorFilter)).Grow(1).Submitted() {
 					m.applyLogFilter()
 				}
@@ -1239,7 +1298,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.applyLogFilter()
 				}
 			})
-			f.Row().FillWidth().Gap(4).Children(func() {
+			f.Row().FillWidth().Height(26).Gap(4).Children(func() {
 				if f.Field(&m.logSince, logSinceID, text(i18n.SinceDate), text(i18n.SinceDate)).Grow(1).Submitted() {
 					m.applyLogFilter()
 				}
@@ -1247,7 +1306,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.applyLogFilter()
 				}
 			})
-			f.Row().FillWidth().Gap(4).Children(func() {
+			f.Row().FillWidth().Height(26).Gap(4).Children(func() {
 				if f.Field(&m.logRef, logRefID, text(i18n.RefFilter), text(i18n.RefFilter)).Grow(1).Submitted() {
 					m.applyLogFilter()
 				}
@@ -1283,7 +1342,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.logTableBounds = f.Table(&m.logTable, flex.TableSpec{
 						Rows: logScope, Header: logHeaderScope, Columns: columns, Source: &m.logSource,
 						RowHeight: 25,
-					}).FillWidth().Height(max(float32(55), m.height-44-36-16-24-26-26-26-26-24-26))
+					}).FillWidth().Height(max(float32(55), m.height-310))
 					if row, ok := m.logTableBounds.RowClicked(); ok && row < len(m.commits) {
 						m.selectCommit(m.commits[row].SHA)
 					}
@@ -1295,8 +1354,17 @@ func (m *Model) paintLog(f *flex.Frame) {
 				}
 			})
 		})
-		f.Divider()
-		f.Column().Grow(1).FillHeight().Pad(8).Gap(8).Background(ui.RGB(29, 31, 36)).Children(func() {
+		if m.width >= 1000 {
+			f.Splitter(tree.ID(feature, "log-details-split"), &m.logDetailsSplit).Mins(230, 250)
+		}
+		detailWidth := min(max(m.logDetailsSplit.Pos, float32(250)), max(float32(250), m.width*0.34))
+		details := f.Column().FillHeight().Pad(8).Gap(6).Background(ui.RGB(29, 31, 36))
+		if m.width >= 1000 {
+			details.Width(detailWidth)
+		} else {
+			details.Width(min(float32(240), max(float32(190), (m.width-300)*0.42)))
+		}
+		details.Children(func() {
 			if m.selectedCommit == "" {
 				f.Text(text(i18n.NoCommits)).Muted().FontSize(12)
 				return
@@ -1307,7 +1375,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 				f.Button(copySHAID, text(i18n.CopySHA)).Ghost().Small()
 			})
 			f.Text(text(i18n.CommitFiles)).Bold().FontSize(12).PadY(5)
-			f.ScrollArea(logFilesID).Height(130).Children(func() {
+			f.ScrollArea(logFilesID).Grow(1).Children(func() {
 				for i, path := range m.commitFiles {
 					selected := m.selectedCommitFile == path
 					color := ui.RGB(29, 31, 36)
