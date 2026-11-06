@@ -2,6 +2,8 @@ package workbench
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 
 	"github.com/vivaui/viva/components"
@@ -38,6 +40,7 @@ type Update struct {
 	Message    string
 	Files      []string
 	Refs       []git.Ref
+	BranchPlan repo.BranchDeletePlan
 }
 
 func (session *Session) Refs(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
@@ -128,12 +131,53 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			err = r.CreateBranch(ctx, path)
 		case "switch-branch":
 			err = r.SwitchBranch(ctx, path)
+		case "rename-branch":
+			parts := strings.SplitN(message, "\x00", 2)
+			if len(parts) != 2 {
+				err = errors.New("invalid branch rename request")
+			} else {
+				err = r.RenameBranch(ctx, parts[0], parts[1])
+			}
+		case "set-upstream":
+			parts := strings.SplitN(message, "\x00", 2)
+			if len(parts) != 2 {
+				err = errors.New("invalid upstream request")
+			} else {
+				err = r.SetUpstream(ctx, parts[0], parts[1])
+			}
+		case "checkout-remote":
+			parts := strings.SplitN(message, "\x00", 2)
+			if len(parts) != 2 {
+				err = errors.New("invalid remote checkout request")
+			} else {
+				err = r.CheckoutRemoteBranch(ctx, parts[0], parts[1])
+			}
 		}
 		status, refreshErr := r.Status(ctx)
 		if err == nil {
 			err = refreshErr
 		}
 		session.deliver(Update{Repository: r, Status: status, Path: path, Kind: kind, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanDeleteBranch(ctx context.Context, r *repo.Repository, name string, request uint64, notify func()) {
+	go func() {
+		plan, err := r.PlanDeleteBranch(ctx, name)
+		session.deliver(Update{Repository: r, Kind: "branch-delete-plan", Path: name, BranchPlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) DeleteBranch(ctx context.Context, r *repo.Repository, plan repo.BranchDeletePlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.DeleteBranch(ctx, plan)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Path: plan.Name, Kind: "delete-branch", Err: err}, notify)
 	}()
 }
 

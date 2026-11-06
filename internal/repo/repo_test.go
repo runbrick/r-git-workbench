@@ -551,6 +551,114 @@ func TestSwitchBranchPreservesDirtyWorktreeOnRefusal(t *testing.T) {
 	}
 }
 
+func TestBranchManagementAndDeletePreflight(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init")
+	run("config", "user.name", "Branch Manager")
+	run("config", "user.email", "branch-manager@example.com")
+	run("commit", "--allow-empty", "-m", "initial")
+	run("branch", "feature/delete-me")
+	run("config", "remote.origin.url", "../unused.git")
+	run("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	run("update-ref", "refs/remotes/origin/feature/delete-me", run("rev-parse", "HEAD"))
+	run("branch", "--set-upstream-to=origin/feature/delete-me", "feature/delete-me")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RenameBranch(context.Background(), "feature/delete-me", "feature/renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetUpstream(context.Background(), "feature/renamed", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("for-each-ref", "--format=%(upstream)", "refs/heads/feature/renamed"); got != "" {
+		t.Fatalf("upstream was not removed: %q", got)
+	}
+	if err := r.SetUpstream(context.Background(), "feature/renamed", "refs/remotes/origin/feature/delete-me"); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("for-each-ref", "--format=%(upstream)", "refs/heads/feature/renamed"); got != "refs/remotes/origin/feature/delete-me" {
+		t.Fatalf("wrong upstream: %q", got)
+	}
+	if err := r.CheckoutRemoteBranch(context.Background(), "refs/remotes/origin/feature/delete-me", "feature/tracking"); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("for-each-ref", "--format=%(upstream)", "refs/heads/feature/tracking"); got != "refs/remotes/origin/feature/delete-me" {
+		t.Fatalf("tracking branch upstream: %q", got)
+	}
+	plan, err := r.PlanDeleteBranch(context.Background(), "feature/renamed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target != run("rev-parse", "refs/heads/feature/renamed") {
+		t.Fatalf("delete preview target %s does not match branch", plan.Target)
+	}
+	if err := r.DeleteBranch(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.PlanDeleteBranch(context.Background(), "feature/tracking"); err == nil {
+		t.Fatal("current branch was offered for deletion")
+	}
+	if _, err := r.PlanDeleteBranch(context.Background(), "missing"); err == nil {
+		t.Fatal("missing branch was offered for deletion")
+	}
+}
+
+func TestDeleteBranchRejectsStalePreflight(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init")
+	run("config", "user.name", "Stale Plan")
+	run("config", "user.email", "stale@example.com")
+	run("commit", "--allow-empty", "-m", "initial")
+	run("branch", "feature/stale")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanDeleteBranch(context.Background(), "feature/stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "--allow-empty", "-m", "advance head")
+	if err := r.DeleteBranch(context.Background(), plan); err == nil {
+		t.Fatal("stale delete preflight was accepted")
+	}
+	if got := run("show-ref", "--verify", "refs/heads/feature/stale"); got == "" {
+		t.Fatal("branch was deleted after stale preflight")
+	}
+}
+
 func TestLogFiltersPathAndAuthor(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {

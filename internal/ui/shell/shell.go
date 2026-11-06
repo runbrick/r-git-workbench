@@ -86,6 +86,8 @@ type Model struct {
 	invalidator        app.Invalidator
 	path               flex.Field
 	branchName         flex.Field
+	localBranchName    flex.Field
+	branchRenameOld    string
 	message            commitDraft
 	logQuery           flex.Field
 	logAuthor          flex.Field
@@ -118,6 +120,8 @@ type Model struct {
 	logColumns         [5]components.TableColumn
 	graphRows          []graphRow
 	refs               []git.Ref
+	deletePlan         *repo.BranchDeletePlan
+	deletePending      string
 	refsRequest        uint64
 	logLoading         bool
 	logHasMore         bool
@@ -335,7 +339,7 @@ func (m *Model) Config() app.Config {
 				m.message.ensure()
 				return &m.message.input
 			}
-			return flex.Fields(&m.path, &m.branchName, &m.logQuery, &m.logAuthor, &m.logPath)(context)
+			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.logQuery, &m.logAuthor, &m.logPath)(context)
 		},
 		OnScroll: func(event ui.ScrollEvent) ui.EventResult {
 			if m.Active == keymap.ShowLog && contains(m.logTableBounds.Rect(), event.X, event.Y) {
@@ -471,6 +475,27 @@ func (m *Model) Config() app.Config {
 				case "switch-branch":
 					if update.Status.Root != "" {
 						m.status = update.Status
+					}
+				case "branch-delete-plan":
+					if update.Err == nil {
+						m.deletePlan = &update.BranchPlan
+					}
+					m.busy = false
+				case "rename-branch", "set-upstream", "checkout-remote", "delete-branch":
+					if update.Err == nil {
+						m.loadRefs()
+						if update.Kind == "rename-branch" {
+							m.branchRenameOld = ""
+							m.localBranchName.SetText("")
+							if m.logFilter.Ref == "refs/heads/"+update.Path {
+								m.logFilter.Ref = ""
+								m.resetLog()
+								m.loadLog()
+							}
+						}
+						if update.Kind == "delete-branch" {
+							m.deletePlan = nil
+						}
 					}
 					if update.Err == nil {
 						m.selected, m.diff, m.showComparison = -1, "", false
@@ -662,6 +687,20 @@ func (m *Model) paintBranches(f *flex.Frame) {
 				m.write("create-branch", strings.TrimSpace(m.branchName.Text()), "")
 			}
 		})
+		if m.deletePlan != nil {
+			f.Row().FillWidth().Gap(8).Items(flex.Center).Children(func() {
+				f.Text(fmt.Sprintf("%s %s (%s)", text(i18n.ConfirmDeleteBranch), m.deletePlan.Name, m.deletePlan.Target[:min(8, len(m.deletePlan.Target))])).FontSize(12)
+				if f.Button(tree.ID(feature, "confirm-delete-branch"), text(i18n.DeleteBranch)).Small().Disabled(m.busy).Clicked() {
+					plan := *m.deletePlan
+					m.deletePlan = nil
+					m.busy = true
+					m.mailbox.DeleteBranch(m.ctx, m.repository, plan, m.invalidator.Invalidate)
+				}
+				if f.Button(tree.ID(feature, "cancel-delete-branch"), text(i18n.Cancel)).Ghost().Small().Clicked() {
+					m.deletePlan = nil
+				}
+			})
+		}
 		f.Divider()
 		f.ScrollArea(logScrollID).Grow(1).Children(func() {
 			for _, remote := range []bool{false, true} {
@@ -692,6 +731,37 @@ func (m *Model) paintBranches(f *flex.Frame) {
 							if f.Button(branchSwitchScope.At(i), text(i18n.SwitchBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 								m.write("switch-branch", ref.Name, "")
 							}
+							if f.Button(tree.ID(feature, fmt.Sprintf("rename-branch-%d", i)), text(i18n.RenameBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+								m.branchRenameOld = ref.Name
+								m.localBranchName.SetText(ref.Name)
+							}
+							if f.Button(tree.ID(feature, fmt.Sprintf("delete-branch-%d", i)), text(i18n.DeleteBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+								m.busy = true
+								m.deletePlan = nil
+								m.mailbox.PlanDeleteBranch(m.ctx, m.repository, ref.Name, m.refsRequest, m.invalidator.Invalidate)
+							}
+						}
+						if !remote {
+							upstream := ref.Upstream
+							if upstream != "" {
+								if f.Button(tree.ID(feature, fmt.Sprintf("unset-upstream-%d", i)), text(i18n.UnsetUpstream)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+									m.write("set-upstream", ref.Name, ref.Name+"\x00")
+								}
+							} else if remoteForBranch(m.refs, ref.Name) != "" {
+								upstream = remoteForBranch(m.refs, ref.Name)
+								if f.Button(tree.ID(feature, fmt.Sprintf("set-upstream-%d", i)), text(i18n.SetUpstream)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+									m.write("set-upstream", ref.Name, ref.Name+"\x00"+upstream)
+								}
+							}
+						}
+						if remote {
+							localName := ref.Name
+							if slash := strings.IndexByte(localName, '/'); slash >= 0 {
+								localName = localName[slash+1:]
+							}
+							if f.Button(tree.ID(feature, fmt.Sprintf("checkout-remote-%d", i)), text(i18n.CheckoutRemoteBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+								m.write("checkout-remote", ref.FullName, ref.FullName+"\x00"+localName)
+							}
 						}
 					})
 					if row.Clicked() {
@@ -702,8 +772,27 @@ func (m *Model) paintBranches(f *flex.Frame) {
 					}
 				}
 			}
+			if m.branchRenameOld != "" {
+				f.Row().FillWidth().Gap(8).Children(func() {
+					if f.Field(&m.localBranchName, tree.ID(feature, "rename-branch-name"), text(i18n.LocalBranchName), text(i18n.LocalBranchName)).Grow(1).Submitted() {
+						m.write("rename-branch", m.branchRenameOld, m.branchRenameOld+"\x00"+strings.TrimSpace(m.localBranchName.Text()))
+					}
+					if f.Button(tree.ID(feature, "rename-branch-submit"), text(i18n.RenameBranch)).Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+						m.write("rename-branch", m.branchRenameOld, m.branchRenameOld+"\x00"+strings.TrimSpace(m.localBranchName.Text()))
+					}
+				})
+			}
 		})
 	})
+}
+
+func remoteForBranch(refs []git.Ref, local string) string {
+	for _, ref := range refs {
+		if ref.Remote && strings.HasSuffix(ref.FullName, "/"+local) {
+			return ref.FullName
+		}
+	}
+	return ""
 }
 
 func (m *Model) paintChangesSidebar(f *flex.Frame) {

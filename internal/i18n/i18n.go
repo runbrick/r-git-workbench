@@ -65,9 +65,17 @@ const (
 	NewBranch
 	BranchName
 	SwitchBranch
+	RenameBranch
+	DeleteBranch
+	SetUpstream
+	UnsetUpstream
+	CheckoutRemoteBranch
+	LocalBranchName
+	ConfirmDeleteBranch
+	Cancel
 )
 
-var stringsByLanguage = [...][SwitchBranch + 1]string{
+var stringsByLanguage = [...][Cancel + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -83,6 +91,8 @@ var stringsByLanguage = [...][SwitchBranch + 1]string{
 		"Author", "Path",
 		"Local branches", "Remote branches",
 		"Create branch", "Branch name", "Switch",
+		"Rename", "Delete", "Set upstream", "Unset upstream", "Checkout as local", "Local branch name",
+		"Delete this branch?", "Cancel",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -99,6 +109,8 @@ var stringsByLanguage = [...][SwitchBranch + 1]string{
 		"作者", "路径",
 		"本地分支", "远程分支",
 		"新建分支", "分支名称", "切换",
+		"重命名", "删除", "设置上游", "取消上游", "检出为本地分支", "本地分支名",
+		"确认删除此分支？", "取消",
 	},
 }
 
@@ -115,7 +127,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > SwitchBranch {
+	if language > Chinese || key > Cancel {
 		return ""
 	}
 	return stringsByLanguage[language][key]
