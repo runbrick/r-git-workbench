@@ -27,12 +27,27 @@ type Repository struct {
 
 func (r *Repository) Refs(ctx context.Context) ([]git.Ref, error) {
 	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{
-		"for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00", "refs/heads", "refs/remotes",
+		"for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:trackshort)%00", "refs/heads", "refs/remotes", "refs/tags",
 	}, OutputLimit: 4 << 20})
 	if err != nil {
 		return nil, fmt.Errorf("list branches: %w: %s", err, result.Stderr)
 	}
 	return git.ParseRefs(result.Stdout)
+}
+
+func (r *Repository) Remotes(ctx context.Context) ([]string, error) {
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"remote"}, OutputLimit: 1 << 20})
+	if err != nil {
+		return nil, fmt.Errorf("list remotes: %w: %s", err, result.Stderr)
+	}
+	var remotes []string
+	for _, remote := range strings.Fields(string(result.Stdout)) {
+		if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
+			continue
+		}
+		remotes = append(remotes, remote)
+	}
+	return remotes, nil
 }
 
 func (r *Repository) Log(ctx context.Context, skip, limit int) ([]git.Commit, error) {
@@ -48,6 +63,8 @@ type LogFilter struct {
 	Author  string
 	Path    string
 	Ref     string
+	Since   string
+	Until   string
 }
 
 func (r *Repository) LogQuery(ctx context.Context, skip, limit int, filter LogFilter) ([]git.Commit, error) {
@@ -58,7 +75,7 @@ func (r *Repository) LogQuery(ctx context.Context, skip, limit int, filter LogFi
 	if filter.Ref == "" {
 		args = append(args, "--all")
 	} else {
-		if !strings.HasPrefix(filter.Ref, "refs/heads/") && !strings.HasPrefix(filter.Ref, "refs/remotes/") || strings.ContainsAny(filter.Ref, "\x00\r\n") {
+		if !strings.HasPrefix(filter.Ref, "refs/heads/") && !strings.HasPrefix(filter.Ref, "refs/remotes/") && !strings.HasPrefix(filter.Ref, "refs/tags/") || strings.ContainsAny(filter.Ref, "\x00\r\n") {
 			return nil, errors.New("invalid branch reference")
 		}
 		args = append(args, filter.Ref)
@@ -68,6 +85,23 @@ func (r *Repository) LogQuery(ctx context.Context, skip, limit int, filter LogFi
 	}
 	if filter.Author != "" {
 		args = append(args, "--fixed-strings", "--regexp-ignore-case", "--author="+filter.Author)
+	}
+	if filter.Since != "" {
+		start, err := time.Parse("2006-01-02", filter.Since)
+		if err != nil {
+			return nil, errors.New("invalid log start date; expected YYYY-MM-DD")
+		}
+		args = append(args, fmt.Sprintf("--since=@%d", start.Unix()))
+	}
+	if filter.Until != "" {
+		end, err := time.Parse("2006-01-02", filter.Until)
+		if err != nil {
+			return nil, errors.New("invalid log end date; expected YYYY-MM-DD")
+		}
+		args = append(args, fmt.Sprintf("--before=@%d", end.AddDate(0, 0, 1).Unix()))
+	}
+	if filter.Since != "" && filter.Until != "" && filter.Since > filter.Until {
+		return nil, errors.New("log start date must not be after end date")
 	}
 	if filter.Path != "" {
 		if err := r.checkPath(filter.Path); err != nil {
@@ -220,15 +254,54 @@ func (r *Repository) Status(ctx context.Context) (git.Status, error) {
 	return git.ReadStatus(ctx, r.runner, r.Root)
 }
 
+type PullPolicy uint8
+
+const (
+	PullMerge PullPolicy = iota
+	PullRebase
+	PullFFOnly
+)
+
 func (r *Repository) Remote(ctx context.Context, operation string, progress func(string)) error {
+	return r.RemoteWithPolicy(ctx, operation, "", PullMerge, progress)
+}
+
+func (r *Repository) RemoteWithPolicy(ctx context.Context, operation, remote string, policy PullPolicy, progress func(string)) error {
 	var args []string
 	switch operation {
 	case "fetch":
 		args = []string{"fetch", "--progress", "--prune"}
+		if remote != "" {
+			args = append(args, "--", remote)
+		}
 	case "pull":
-		args = []string{"pull", "--progress", "--no-rebase"}
+		args = []string{"pull", "--progress"}
+		switch policy {
+		case PullMerge:
+			args = append(args, "--no-rebase")
+		case PullRebase:
+			args = append(args, "--rebase")
+		case PullFFOnly:
+			args = append(args, "--ff-only")
+		default:
+			return fmt.Errorf("unknown pull policy %d", policy)
+		}
+		if remote != "" {
+			branch, err := r.upstreamBranch(ctx)
+			if err != nil {
+				return err
+			}
+			args = append(args, "--", remote, branch)
+		}
 	case "push":
 		args = []string{"push", "--progress"}
+		if remote != "" {
+			branch, err := r.upstreamBranch(ctx)
+			if err != nil {
+				return err
+			}
+			args = append(args, "--", remote, "HEAD:refs/heads/"+branch)
+		}
 	default:
 		return fmt.Errorf("unknown remote operation %q", operation)
 	}
@@ -241,6 +314,25 @@ func (r *Repository) Remote(ctx context.Context, operation string, progress func
 	return nil
 }
 
+func (r *Repository) upstreamBranch(ctx context.Context) (string, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return "", err
+	}
+	if status.Branch == "" || status.Branch == "(detached)" {
+		return "", errors.New("remote operation requires a local branch")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"for-each-ref", "--format=%(upstream:short)", "refs/heads/" + status.Branch}})
+	if err != nil {
+		return "", fmt.Errorf("read branch upstream: %w: %s", err, result.Stderr)
+	}
+	_, branch, ok := strings.Cut(strings.TrimSpace(string(result.Stdout)), "/")
+	if !ok || branch == "" {
+		return "", errors.New("current branch has no usable upstream")
+	}
+	return branch, nil
+}
+
 type ForcePushPlan struct {
 	Remote string
 	Branch string
@@ -248,7 +340,95 @@ type ForcePushPlan struct {
 	Lease  string
 }
 
-func (r *Repository) PlanForcePush(ctx context.Context) (ForcePushPlan, error) {
+type PushPlan struct {
+	Remote   string
+	Branch   string
+	Local    string
+	Upstream string
+	Commits  []git.Commit
+}
+
+func (r *Repository) PlanPush(ctx context.Context, selectedRemote ...string) (PushPlan, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return PushPlan{}, err
+	}
+	if status.Branch == "" || status.Branch == "(detached)" {
+		return PushPlan{}, errors.New("push requires a local branch")
+	}
+	upstream, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"for-each-ref", "--format=%(upstream)", "refs/heads/" + status.Branch}})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("read push upstream: %w: %s", err, upstream.Stderr)
+	}
+	upstreamRef := strings.TrimSpace(string(upstream.Stdout))
+	remote, branch, ok := strings.Cut(strings.TrimPrefix(upstreamRef, "refs/remotes/"), "/")
+	if !strings.HasPrefix(upstreamRef, "refs/remotes/") || !ok || remote == "" || branch == "" {
+		return PushPlan{}, errors.New("current branch has no usable upstream")
+	}
+	if len(selectedRemote) > 0 && selectedRemote[0] != "" {
+		remote = selectedRemote[0]
+		branch = strings.TrimPrefix(upstreamRef, "refs/remotes/")
+		_, branch, _ = strings.Cut(branch, "/")
+		if branch == "" {
+			return PushPlan{}, errors.New("cannot determine upstream branch")
+		}
+		upstreamRef = "refs/remotes/" + remote + "/" + branch
+		if _, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", upstreamRef}}); err != nil {
+			return PushPlan{}, fmt.Errorf("selected remote has no fetched upstream branch %s: %w", upstreamRef, err)
+		}
+	}
+	local, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("resolve local push target: %w: %s", err, local.Stderr)
+	}
+	remoteSHA, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", upstreamRef}})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("resolve remote push target: %w: %s", err, remoteSHA.Stderr)
+	}
+	commits, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", "--reverse", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00", upstreamRef + "..HEAD"}, OutputLimit: 4 << 20})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("list commits to push: %w: %s", err, commits.Stderr)
+	}
+	preview, err := git.ParseLog(commits.Stdout)
+	if err != nil {
+		return PushPlan{}, err
+	}
+	return PushPlan{Remote: remote, Branch: branch, Local: strings.TrimSpace(string(local.Stdout)), Upstream: strings.TrimSpace(string(remoteSHA.Stdout)), Commits: preview}, nil
+}
+
+func (r *Repository) ExecutePush(ctx context.Context, plan PushPlan, progress func(string)) error {
+	if plan.Remote == "" || plan.Branch == "" || plan.Local == "" || plan.Upstream == "" {
+		return errors.New("invalid push plan")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanPush(ctx, plan.Remote)
+	if err != nil {
+		return err
+	}
+	if current.Remote != plan.Remote || current.Branch != plan.Branch || current.Local != plan.Local || current.Upstream != plan.Upstream || !sameCommits(current.Commits, plan.Commits) {
+		return errors.New("push targets changed after preflight; review a new plan")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"push", "--progress", plan.Remote, "HEAD:refs/heads/" + plan.Branch}, Write: true, OnProgress: progress})
+	if err != nil {
+		return fmt.Errorf("push: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func sameCommits(left, right []git.Commit) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].SHA != right[i].SHA || left[i].Author != right[i].Author || left[i].Date != right[i].Date || left[i].Subject != right[i].Subject || !slices.Equal(left[i].Parents, right[i].Parents) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Repository) PlanForcePush(ctx context.Context, selectedRemote ...string) (ForcePushPlan, error) {
 	status, err := r.Status(ctx)
 	if err != nil {
 		return ForcePushPlan{}, err
@@ -269,6 +449,11 @@ func (r *Repository) PlanForcePush(ctx context.Context) (ForcePushPlan, error) {
 	if !ok || remote == "" || branch == "" {
 		return ForcePushPlan{}, errors.New("cannot determine push remote and branch")
 	}
+	if len(selectedRemote) > 0 && selectedRemote[0] != "" {
+		remote = selectedRemote[0]
+		branch = remoteBranch[strings.IndexByte(remoteBranch, '/')+1:]
+		upstream = "refs/remotes/" + remote + "/" + branch
+	}
 	local, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
 	if err != nil {
 		return ForcePushPlan{}, fmt.Errorf("resolve local push target: %w: %s", err, local.Stderr)
@@ -286,7 +471,7 @@ func (r *Repository) ExecuteForcePush(ctx context.Context, plan ForcePushPlan, p
 	}
 	r.write.Lock()
 	defer r.write.Unlock()
-	current, err := r.PlanForcePush(ctx)
+	current, err := r.PlanForcePush(ctx, plan.Remote)
 	if err != nil {
 		return err
 	}

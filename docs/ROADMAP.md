@@ -50,7 +50,7 @@ M0 headless 与二进制测量见 [benchmarks/M0_WINDOWS.md](benchmarks/M0_WINDO
 
 ## M2 进度
 
-Log 已接入按需加载的只读列表：首次进入加载 100 条，滚动到底部自动请求下一批，也可点击“加载更多”；提交消息、作者、路径可由 Git 查询筛选并按筛选结果分页。选择提交后异步读取完整消息和文件路径，可选择文件查看与父提交对比的只读并排 Diff，并复制 SHA；合并提交与第一父提交比较。主窗口参照 Rebased README 截图调整为深色紧凑工具栏、Lucide 图标导航轨道、常驻 Changes/多行 Commit 面板和中央 Log/右侧文件与提交详情；提交图按父 SHA 绘制可见行的轨道和节点，表格只声明可见行。真实仓库测试覆盖空历史、105 条提交的分页边界和滚动加载、消息/作者/路径筛选及新增、修改、删除和合并提交的文件 Diff；Driver 测试覆盖多行提交、筛选、选择、复制 SHA、文件 Diff、窄窗口布局及 10,000 条内存提交的可见行数量。提交图仅支持前六条可见轨道，复杂分支折叠、引用标签、日期/分支筛选与大仓库滚动基准尚未实现，M2 未完成。
+Log 已接入按需加载的只读列表：首次进入加载 100 条，滚动到底部自动请求下一批，也可点击“加载更多”；提交消息、作者、路径、日期范围和分支/引用可由 Git 查询筛选并按筛选结果分页。选择提交后异步读取完整消息和文件路径，可选择文件查看与父提交对比的只读并排 Diff，并复制 SHA；合并提交与第一父提交比较。提交主题附带 HEAD、本地分支、远程分支和 Tag 的文本引用标签。主窗口参照 Rebased README 截图调整为深色紧凑工具栏、Lucide 图标导航轨道、常驻 Changes/多行 Commit 面板和中央 Log/右侧文件与提交详情；提交图按父 SHA 绘制可见行的轨道和节点，表格只声明可见行。真实仓库测试覆盖空历史、105 条提交的分页边界和滚动加载、消息/作者/路径/日期/引用筛选及新增、修改、删除和合并提交的文件 Diff；Driver 测试覆盖多行提交、筛选、选择、复制 SHA、文件 Diff、窄窗口布局及 10,000 条内存提交的可见行数量。提交图仅支持前六条可见轨道，复杂分支折叠和大仓库滚动基准尚未实现，M2 未完成。
 
 ## M3 进度
 
@@ -58,7 +58,7 @@ Branches 页面通过 `for-each-ref` 展示本地、远程分支及 upstream；�
 
 ## M4 进度
 
-顶栏已接入 Fetch、Pull（merge 策略）和 Push，均在后台执行并在完成后刷新状态、引用与 Log；Git 的 CR/LF 进度消息逐行投递至窗口，远端操作可取消。Push/Pull 使用当前分支配置的 upstream，无 upstream、网络、认证和 hook 错误保留原始 Git 输出。Force push with lease 使用预检计划、展示目标远端/分支和本地 SHA/预期远端 SHA、二次确认，并在执行前重新校验后运行显式 `--force-with-lease`。真实 bare 仓库测试覆盖普通同步及过期 lease 拒绝。多远端选择、ahead/behind 与提交预览、Pull 策略设置及错误分类 UI 尚未实现，M4 未完成。首发继续依赖系统 credential helper/SSH agent，不提供内置 askpass。
+顶栏已接入 Fetch、Pull 和 Push，均在后台执行并在完成后刷新状态、引用与 Log；Git 的 CR/LF 进度消息逐行投递至窗口，远端操作可取消。Branches 页提供上游默认目标与多远端选择；Pull 支持 Merge、Rebase、Fast-forward only 三种策略，默认 Merge，选择仅保留在当前窗口会话中；当前分支相对已 fetch upstream 的 ahead/behind 计数从 porcelain v2 读取并在分支选择器中显示。常规 Push 先预览所选目标远端/分支、两侧 SHA 与待推提交，确认后重新校验计划再执行。Push/Pull 使用当前分支 upstream 的分支名映射所选远端；Fetch 可指定所选远端。无 upstream、网络、认证和 hook 错误保留原始 Git 输出。Force push with lease 使用预检计划、展示目标远端/分支和本地 SHA/预期远端 SHA、二次确认，并在执行前重新校验后运行显式 `--force-with-lease`。真实 bare 仓库测试覆盖普通同步、rebase、ff-only 拒绝分叉、ahead/behind 计数、多远端待推提交预览及过期计划/lease 拒绝。Pull 策略持久化及错误分类 UI 尚未实现，M4 未完成。首发继续依赖系统 credential helper/SSH agent，不提供内置 askpass。
 
 ## Rebased 对照（2026-11-06）
 

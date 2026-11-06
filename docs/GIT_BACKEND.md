@@ -49,10 +49,10 @@
 | 文件 Diff | `diff --no-color --no-ext-diff -U3 [--cached] [-w] -- <path>`；比较提交时 `diff <a> <b> -- <path>` |
 | 文件内容 | `cat-file --batch`（长驻进程，Log/Diff 浏览期间复用，空闲 30 秒后关闭） |
 
-当前 M2 增量：Log 按 100 条分页，提交消息以 `--fixed-strings --regexp-ignore-case --grep=<消息>`、作者以 `--author=<名称>`、路径以 `-- <路径>` 在 Git 中筛选后分页；提交文件通过 `ls-tree` 确认父提交/当前提交是否包含该路径，再读取两侧对象，根提交以空内容为基准；合并提交的文件列表与 Diff 相对第一父提交。大文件和二进制文件回退显示 Git patch。图形目前按父 SHA 在 UI 绘制至多六条轨道；日期/分支筛选、复杂图折叠和持久 `cat-file --batch` 尚待实现。
+当前 M2 增量：Log 按 100 条分页，提交消息以 `--fixed-strings --regexp-ignore-case --grep=<消息>`、作者以 `--author=<名称>`、路径以 `-- <路径>`、日期以 Unix 时间边界、分支/引用以受校验的 ref 在 Git 中筛选后分页；提交文件通过 `ls-tree` 确认父提交/当前提交是否包含该路径，再读取两侧对象，根提交以空内容为基准；合并提交的文件列表与 Diff 相对第一父提交。大文件和二进制文件回退显示 Git patch。图形目前按父 SHA 在 UI 绘制至多六条轨道；提交主题显示 HEAD、本地/远程分支及 Tag 文本标签，复杂图折叠和持久 `cat-file --batch` 尚待实现。
 当前 M3 增量：`for-each-ref` 读取本地/远程引用及 upstream；支持新建、重命名、删除本地分支和 upstream 管理。远程 checkout 预检绑定远程目标 SHA、HEAD 与 porcelain 状态；确认后再次校验，干净工作区安全检出，脏工作区可取消、先以 `stash push --include-untracked` 保存再检出，或经二次确认后 `switch --discard-changes` 强制检出。所有写操作由仓库互斥锁串行；变更状态后的过期计划会被拒绝。
-当前 M4 增量：Fetch 使用 `fetch --progress --prune`，Pull 使用 `pull --progress --no-rebase`，Push 使用 `push --progress`，后两者依赖当前分支 upstream。`gitexec.Command.OnProgress` 解析 stderr 中 CR/LF 分隔的进度行，同时保留完整有界 stderr；调用方通过 context 取消，平台进程终止逻辑负责停止 Git。完成后统一刷新仓库状态。
-Force push 通过计划读取本地 HEAD 与 upstream SHA，确认后重新计算并要求计划完全一致，再执行 `push --force-with-lease=refs/heads/<branch>:<expected>`。远端更新发生在预检之后时，lease 会拒绝覆盖。
+当前 M4 增量：Fetch 使用 `fetch --progress --prune [<remote>]`，Pull 按用户选择使用 `pull --progress --no-rebase`、`--rebase` 或 `--ff-only`（当前会话默认 Merge），Push 使用 `push --progress`，默认使用当前分支 upstream；选择远端时 Pull/Push 将 upstream 分支名映射到所选远端。porcelain v2 的 `branch.ab` 解析为快照中的 ahead/behind 计数，语义相对已知 upstream，因此 Fetch 后更新。`gitexec.Command.OnProgress` 解析 stderr 中 CR/LF 分隔的进度行，同时保留完整有界 stderr；调用方通过 context 取消，平台进程终止逻辑负责停止 Git。完成后统一刷新仓库状态。
+普通 Push 通过计划读取目标远端引用与本地 SHA，并列出目标远端引用到 HEAD 的提交；确认后重新计算并校验远端、本地 SHA 与提交列表再推送。Force push 通过计划读取本地 HEAD 与目标远端跟踪引用 SHA，确认后重新计算并要求计划完全一致，再执行 `push --force-with-lease=refs/heads/<branch>:<expected>`。远端更新发生在预检之后时，lease 会拒绝覆盖。
 | 冲突三方 | `show :1:<path>` / `:2:` / `:3:`，或从 `ls-files -u -z` 读取 stage |
 | Stash | `stash list -z --format=...`；`stash show -p --include-untracked` |
 | 配置 | `config --list --show-origin --show-scope -z` |

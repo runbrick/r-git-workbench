@@ -7,7 +7,7 @@ import (
 
 func TestParseStatusBranchesRenamesAndConflicts(t *testing.T) {
 	data := strings.Join([]string{
-		"# branch.oid 0123456789abcdef\n# branch.head feature/test\n1 .M N... 100644 100644 100644 abc def path with spaces.txt",
+		"# branch.oid 0123456789abcdef\n# branch.head feature/test\n# branch.ab +3 -2\n1 .M N... 100644 100644 100644 abc def path with spaces.txt",
 		"2 R. N... 100644 100644 100644 abc def R100 renamed.txt",
 		"previous.txt",
 		"u UU N... 100644 100644 100644 100644 abc def ghi conflict.txt",
@@ -18,7 +18,7 @@ func TestParseStatusBranchesRenamesAndConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Branch != "feature/test" || status.Head != "0123456789abcdef" || len(status.Files) != 4 {
+	if status.Branch != "feature/test" || status.Head != "0123456789abcdef" || status.Ahead != 3 || status.Behind != 2 || !status.HasTrack || len(status.Files) != 4 {
 		t.Fatalf("status: %+v", status)
 	}
 	if status.Files[0].Path != "path with spaces.txt" || status.Files[0].Worktree != 'M' {
@@ -32,5 +32,13 @@ func TestParseStatusBranchesRenamesAndConflicts(t *testing.T) {
 	}
 	if !status.Files[3].Untracked || status.Files[3].Path != "untracked\nname.txt" {
 		t.Fatalf("untracked: %+v", status.Files[3])
+	}
+}
+
+func TestParseStatusRejectsInvalidAheadBehind(t *testing.T) {
+	for _, header := range []string{"# branch.ab +x -2", "# branch.ab +1 2", "# branch.ab +-1 -0"} {
+		if _, err := ParseStatus([]byte(header + "\x00")); err == nil {
+			t.Errorf("accepted invalid header %q", header)
+		}
 	}
 }

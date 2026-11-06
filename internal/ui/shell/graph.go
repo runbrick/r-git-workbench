@@ -1,6 +1,8 @@
 package shell
 
 import (
+	"strings"
+
 	"github.com/vivaui/viva/ui"
 
 	"r-git-workbench/internal/git"
@@ -130,6 +132,31 @@ func paintGraph(canvas *ui.Canvas, bounds ui.Rect, scroll float32, rows []graphR
 		canvas.Rounded(ui.Rect{X: x - 4, Y: y + rowHeight/2 - 4, Width: 8, Height: 8}, 4, graphColors[row.lane])
 	}
 	canvas.Unclip()
+}
+
+func refLabels(sha string, refs []git.Ref, head string) string {
+	labels := make([]string, 0, 4)
+	if sha == head {
+		labels = append(labels, "HEAD")
+	}
+	for _, ref := range refs {
+		if ref.SHA != sha || len(labels) == cap(labels) {
+			continue
+		}
+		prefix := ""
+		if ref.Tag {
+			prefix = "tag: "
+		} else if ref.Remote {
+			prefix = "remote: "
+		} else {
+			prefix = "branch: "
+		}
+		labels = append(labels, prefix+ref.Name)
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	return "  [" + strings.Join(labels, ", ") + "]"
 }
 
 func graphLine(canvas *ui.Canvas, x1, y1, x2, y2 float32, color ui.Color) {

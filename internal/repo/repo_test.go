@@ -397,6 +397,7 @@ func TestRefsListsLocalAndRemoteBranches(t *testing.T) {
 	run("config", "user.name", "Refs Test")
 	run("config", "user.email", "refs@example.com")
 	run("commit", "--allow-empty", "-m", "initial")
+	run("tag", "v1.0")
 	run("branch", "feature/test")
 	run("config", "remote.origin.url", "../unused-remote.git")
 	run("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
@@ -410,16 +411,18 @@ func TestRefsListsLocalAndRemoteBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, remote := false, false
+	local, remote, tag := false, false, false
 	for _, ref := range refs {
 		switch {
 		case ref.Name == "feature/test" && !ref.Remote:
 			local = strings.HasSuffix(ref.Upstream, "origin/feature/test") && len(ref.SHA) == 40
 		case ref.Name == "origin/feature/test" && ref.Remote:
 			remote = len(ref.SHA) == 40
+		case ref.Name == "v1.0" && ref.Tag:
+			tag = ref.SHA == run("rev-parse", "v1.0")
 		}
 	}
-	if !local || !remote {
+	if !local || !remote || !tag {
 		t.Fatalf("missing local/upstream or remote ref: %+v", refs)
 	}
 	mainName := run("branch", "--show-current")
@@ -792,7 +795,12 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	run(localDir, "commit", "-m", "base")
 	run(localDir, "branch", "-M", "main")
 	run(localDir, "remote", "add", "origin", remoteDir)
+	backupDir := filepath.Join(root, "backup.git")
+	run(root, "clone", "--bare", remoteDir, backupDir)
+	run(localDir, "remote", "add", "backup", backupDir)
 	run(localDir, "push", "-u", "origin", "main")
+	run(localDir, "push", "backup", "main")
+	run(localDir, "fetch", "backup")
 	r, _, err := Open(context.Background(), gitPath, localDir)
 	if err != nil {
 		t.Fatal(err)
@@ -800,6 +808,10 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	var progress []string
 	if err := r.Remote(context.Background(), "fetch", func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || !status.HasTrack || status.Ahead != 0 || status.Behind != 0 {
+		t.Fatalf("synced upstream status: %+v, %v", status, err)
 	}
 	if err := os.Mkdir(otherDir, 0700); err != nil {
 		t.Fatal(err)
@@ -816,6 +828,10 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	if err := r.Remote(context.Background(), "fetch", func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
+	status, err = r.Status(context.Background())
+	if err != nil || !status.HasTrack || status.Ahead != 0 || status.Behind != 1 {
+		t.Fatalf("behind upstream status: %+v, %v", status, err)
+	}
 	if err := r.Remote(context.Background(), "pull", func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
@@ -827,11 +843,62 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	}
 	run(localDir, "add", "local.txt")
 	run(localDir, "commit", "-m", "local update")
-	if err := r.Remote(context.Background(), "push", func(line string) { progress = append(progress, line) }); err != nil {
+	if err := os.WriteFile(filepath.Join(otherDir, "other.txt"), []byte("diverged remote\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(otherDir, "add", "other.txt")
+	run(otherDir, "commit", "-m", "diverged remote update")
+	run(otherDir, "push", "origin", "main")
+	if err := r.Remote(context.Background(), "fetch", nil); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(context.Background())
+	if err != nil || !status.HasTrack || status.Ahead != 1 || status.Behind != 1 {
+		t.Fatalf("diverged upstream status: %+v, %v", status, err)
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", "", PullFFOnly, nil); err == nil {
+		t.Fatal("fast-forward-only pull accepted diverged history")
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", "", PullRebase, nil); err != nil {
+		t.Fatalf("rebase pull failed: %v", err)
+	}
+	pushPlan, err := r.PlanPush(context.Background())
+	if err != nil || len(pushPlan.Commits) != 1 || pushPlan.Commits[0].Subject != "local update" {
+		t.Fatalf("push preview: %+v, %v", pushPlan, err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "late.txt"), []byte("after preview\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "add", "late.txt")
+	run(localDir, "commit", "-m", "commit after preview")
+	if err := r.ExecutePush(context.Background(), pushPlan, nil); err == nil {
+		t.Fatal("stale push preview was executed")
+	}
+	pushPlan, err = r.PlanPush(context.Background())
+	if err != nil || len(pushPlan.Commits) != 2 {
+		t.Fatalf("refreshed push preview: %+v, %v", pushPlan, err)
+	}
+	if err := r.ExecutePush(context.Background(), pushPlan, func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
 	if got := run(remoteDir, "show", "main:local.txt"); got != "from local" {
 		t.Fatalf("push did not update remote: %q", got)
+	}
+	if got := run(remoteDir, "show", "main:late.txt"); got != "after preview" {
+		t.Fatalf("push did not update remote with refreshed plan: %q", got)
+	}
+	backupPlan, err := r.PlanPush(context.Background(), "backup")
+	if err != nil || backupPlan.Remote != "backup" || backupPlan.Branch != "main" || len(backupPlan.Commits) < 1 {
+		t.Fatalf("selected remote push preview: %+v, %v", backupPlan, err)
+	}
+	if err := r.ExecutePush(context.Background(), backupPlan, nil); err != nil {
+		t.Fatalf("push selected remote: %v", err)
+	}
+	if got := run(backupDir, "show", "main:late.txt"); got != "after preview" {
+		t.Fatalf("selected remote was not updated: %q", got)
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", "", PullPolicy(99), nil); err == nil {
+		t.Fatal("accepted unknown pull policy")
 	}
 	if err := r.Remote(context.Background(), "unknown", nil); err == nil {
 		t.Fatal("accepted unknown remote operation")
@@ -952,8 +1019,32 @@ func TestLogFiltersPathAndAuthor(t *testing.T) {
 	if err != nil || len(second) != 1 || second[0].Subject != "entry 0" {
 		t.Fatalf("filtered second page: %+v, %v", second, err)
 	}
+	refCommand := exec.Command(gitPath, "symbolic-ref", "HEAD")
+	refCommand.Dir = dir
+	refOutput, err := refCommand.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := strings.TrimSpace(string(refOutput))
+	byRef, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Ref: ref})
+	if err != nil || len(byRef) != 3 {
+		t.Fatalf("branch ref filter %q: %+v, %v", ref, byRef, err)
+	}
+	if _, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Ref: "--all"}); err == nil {
+		t.Fatal("accepted invalid log ref")
+	}
 	missing, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Path: "missing.txt"})
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("missing path: %+v, %v", missing, err)
+	}
+	old, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Until: "2000-01-01"})
+	if err != nil || len(old) != 0 {
+		t.Fatalf("historical date filter: %+v, %v", old, err)
+	}
+	if _, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Since: "2025-02-30"}); err == nil {
+		t.Fatal("accepted invalid date filter")
+	}
+	if _, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Since: "2025-02-01", Until: "2025-01-01"}); err == nil {
+		t.Fatal("accepted inverted date range")
 	}
 }
