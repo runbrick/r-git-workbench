@@ -13,6 +13,7 @@ type Ref struct {
 	Upstream string
 	Track    string
 	Remote   bool
+	Tag      bool
 }
 
 // ParseRefs reads NUL-terminated (refname, objectname, upstream, track) records.
@@ -39,6 +40,9 @@ func ParseRefs(data []byte) ([]Ref, error) {
 		case strings.HasPrefix(ref.Name, "refs/remotes/"):
 			ref.Name = ref.Name[len("refs/remotes/"):]
 			ref.Remote = true
+		case strings.HasPrefix(ref.Name, "refs/tags/"):
+			ref.Name = ref.Name[len("refs/tags/"):]
+			ref.Tag = true
 		default:
 			return nil, fmt.Errorf("unexpected ref %q", ref.Name)
 		}

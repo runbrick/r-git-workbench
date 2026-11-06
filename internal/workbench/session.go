@@ -44,12 +44,20 @@ type Update struct {
 	CheckoutPlan repo.RemoteCheckoutPlan
 	PushPlan     repo.ForcePushPlan
 	PushPreview  repo.PushPlan
+	Remotes      []string
 }
 
 func (session *Session) Refs(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
 	go func() {
 		refs, err := r.Refs(ctx)
 		session.deliver(Update{Repository: r, Kind: "refs", Request: request, Refs: refs, Err: err}, notify)
+	}()
+}
+
+func (session *Session) Remotes(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
+	go func() {
+		remotes, err := r.Remotes(ctx)
+		session.deliver(Update{Repository: r, Kind: "remotes", Request: request, Remotes: remotes, Err: err}, notify)
 	}()
 }
 
@@ -184,11 +192,11 @@ func (session *Session) ExecuteRemoteCheckout(ctx context.Context, r *repo.Repos
 	}()
 }
 
-func (session *Session) Remote(ctx context.Context, r *repo.Repository, operation string, policy repo.PullPolicy, notify func()) {
+func (session *Session) Remote(ctx context.Context, r *repo.Repository, operation, remote string, policy repo.PullPolicy, notify func()) {
 	go func() {
 		session.writes.Lock()
 		defer session.writes.Unlock()
-		err := r.RemoteWithPolicy(ctx, operation, policy, func(line string) {
+		err := r.RemoteWithPolicy(ctx, operation, remote, policy, func(line string) {
 			session.deliver(Update{Repository: r, Kind: "remote-progress", Message: line}, notify)
 		})
 		status, refreshErr := r.Status(ctx)
@@ -199,16 +207,16 @@ func (session *Session) Remote(ctx context.Context, r *repo.Repository, operatio
 	}()
 }
 
-func (session *Session) PlanForcePush(ctx context.Context, r *repo.Repository, notify func()) {
+func (session *Session) PlanForcePush(ctx context.Context, r *repo.Repository, remote string, notify func()) {
 	go func() {
-		plan, err := r.PlanForcePush(ctx)
+		plan, err := r.PlanForcePush(ctx, remote)
 		session.deliver(Update{Repository: r, Kind: "force-push-plan", PushPlan: plan, Err: err}, notify)
 	}()
 }
 
-func (session *Session) PlanPush(ctx context.Context, r *repo.Repository, notify func()) {
+func (session *Session) PlanPush(ctx context.Context, r *repo.Repository, remote string, notify func()) {
 	go func() {
-		plan, err := r.PlanPush(ctx)
+		plan, err := r.PlanPush(ctx, remote)
 		session.deliver(Update{Repository: r, Kind: "push-plan", PushPreview: plan, Err: err}, notify)
 	}()
 }

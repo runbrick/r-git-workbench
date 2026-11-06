@@ -48,6 +48,7 @@ var (
 	messageID          = tree.ID(feature, "commit-message")
 	fileScope          = tree.Sub(feature, tree.Name("files"))
 	branchScope        = tree.Sub(feature, tree.Name("branch-refs"))
+	remoteScope        = tree.Sub(feature, tree.Name("remote-targets"))
 	branchSwitchScope  = tree.Sub(feature, tree.Name("branch-switches"))
 	fileListID         = tree.ID(feature, "file-list")
 	diffScrollID       = tree.ID(feature, "diff-scroll")
@@ -130,6 +131,8 @@ type Model struct {
 	logColumns           [5]components.TableColumn
 	graphRows            []graphRow
 	refs                 []git.Ref
+	remotes              []string
+	selectedRemote       string
 	deletePlan           *repo.BranchDeletePlan
 	deletePending        string
 	checkoutPlan         *repo.RemoteCheckoutPlan
@@ -141,6 +144,7 @@ type Model struct {
 	pushPlan             *repo.PushPlan
 	confirmForcePush     bool
 	refsRequest          uint64
+	remotesRequest       uint64
 	logLoading           bool
 	logHasMore           bool
 	logRequest           uint64
@@ -157,7 +161,11 @@ type Model struct {
 	commitDiffSlot       flex.Box
 }
 
-type commitRows struct{ commits []git.Commit }
+type commitRows struct {
+	commits []git.Commit
+	refs    []git.Ref
+	head    string
+}
 
 func (rows *commitRows) Len() int { return len(rows.commits) }
 
@@ -167,7 +175,7 @@ func (rows *commitRows) Cell(row, column int) string {
 	case 0:
 		return ""
 	case 1:
-		return commit.Subject
+		return commit.Subject + refLabels(commit.SHA, rows.refs, rows.head)
 	case 2:
 		return commit.Author
 	case 3:
@@ -206,6 +214,7 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 	m.watch(r)
 	m.loadLog()
 	m.loadRefs()
+	m.loadRemotes()
 }
 
 func (m *Model) loadRefs() {
@@ -214,6 +223,14 @@ func (m *Model) loadRefs() {
 	}
 	m.refsRequest++
 	m.mailbox.Refs(m.ctx, m.repository, m.refsRequest, m.invalidator.Invalidate)
+}
+
+func (m *Model) loadRemotes() {
+	if m.repository == nil {
+		return
+	}
+	m.remotesRequest++
+	m.mailbox.Remotes(m.ctx, m.repository, m.remotesRequest, m.invalidator.Invalidate)
 }
 
 func (m *Model) watch(r *repo.Repository) {
@@ -348,7 +365,7 @@ func (m *Model) startRemote(operation string) {
 	m.operationError = ""
 	m.busy = true
 	m.activeOperation = "remote-" + operation
-	m.mailbox.Remote(ctx, m.repository, operation, m.pullPolicy, m.invalidator.Invalidate)
+	m.mailbox.Remote(ctx, m.repository, operation, m.selectedRemote, m.pullPolicy, m.invalidator.Invalidate)
 }
 
 // SetInitialGit applies startup detection before the window thread begins.
@@ -451,6 +468,9 @@ func (m *Model) Config() app.Config {
 				if update.Kind == "refs" && update.Request != m.refsRequest {
 					continue
 				}
+				if update.Kind == "remotes" && update.Request != m.remotesRequest {
+					continue
+				}
 				if update.Kind == "refresh" && m.activeOperation != "refresh" {
 					continue
 				}
@@ -473,11 +493,14 @@ func (m *Model) Config() app.Config {
 						m.logFilter = repo.LogFilter{}
 						m.resetLog()
 						m.refs = nil
+						m.remotes = nil
+						m.selectedRemote = ""
 						m.watch(update.Repository)
 						m.path.SetText("")
 						m.Active, m.selected, m.diff, m.showComparison = keymap.ShowLog, -1, "", false
 						m.loadLog()
 						m.loadRefs()
+						m.loadRemotes()
 					}
 				case "diff":
 					if update.Err == nil && m.selected >= 0 && m.selected < len(m.status.Files) && m.status.Files[m.selected].Path == update.Path && m.selectedStaged == update.Staged {
@@ -512,6 +535,7 @@ func (m *Model) Config() app.Config {
 				case "refs":
 					if update.Err == nil {
 						m.refs = update.Refs
+						m.logSource.refs, m.logSource.head = m.refs, m.status.Head
 						for _, ref := range m.refs {
 							if !ref.Remote && ref.Name == m.status.Branch && ref.Track != "" {
 								m.status.Ahead = strings.Count(ref.Track, ">")
@@ -519,6 +543,13 @@ func (m *Model) Config() app.Config {
 								m.status.HasTrack = true
 								break
 							}
+						}
+					}
+				case "remotes":
+					if update.Err == nil {
+						m.remotes = update.Remotes
+						if m.selectedRemote != "" && !slices.Contains(m.remotes, m.selectedRemote) {
+							m.selectedRemote = ""
 						}
 					}
 				case "create-branch":
@@ -629,7 +660,7 @@ func (m *Model) Config() app.Config {
 						m.loadRefs()
 					}
 				}
-				if update.Kind != "diff" && update.Kind != "changed" && update.Kind != "watch-error" && update.Kind != "log" && update.Kind != "commit-details" && update.Kind != "commit-file" && update.Kind != "refs" && update.Kind != "remote-progress" {
+				if update.Kind != "diff" && update.Kind != "changed" && update.Kind != "watch-error" && update.Kind != "log" && update.Kind != "commit-details" && update.Kind != "commit-file" && update.Kind != "refs" && update.Kind != "remotes" && update.Kind != "remote-progress" {
 					if m.activeOperation == "" || update.Kind == m.activeOperation {
 						m.busy = false
 						m.activeOperation = ""
@@ -757,14 +788,14 @@ func (m *Model) paintTop(f *flex.Frame) {
 					m.busy = true
 					m.activeOperation = "push-plan"
 					m.operationError = ""
-					m.mailbox.PlanPush(m.ctx, m.repository, m.invalidator.Invalidate)
+					m.mailbox.PlanPush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
 				}
 				if f.Button(tree.ID(feature, "force-push"), text(i18n.ForcePushWithLease)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.Active = keymap.ShowBranches
 					m.busy = true
 					m.activeOperation = "force-push-plan"
 					m.operationError = ""
-					m.mailbox.PlanForcePush(m.ctx, m.repository, m.invalidator.Invalidate)
+					m.mailbox.PlanForcePush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
 				}
 			}
 			f.Button(searchID, text(i18n.Search)).Ghost().Small().Disabled(true)
@@ -969,20 +1000,43 @@ func (m *Model) paintBranches(f *flex.Frame) {
 				})
 			})
 		}
+		if len(m.remotes) > 1 {
+			f.Row().FillWidth().Gap(5).PadX(8).Items(flex.Center).Children(func() {
+				f.Text(text(i18n.RemoteTarget)).Muted().FontSize(11)
+				upstreamLabel := text(i18n.UpstreamDefault)
+				if m.selectedRemote == "" {
+					upstreamLabel += " *"
+				}
+				if f.Button(tree.ID(feature, "remote-upstream"), upstreamLabel).Ghost().Small().Clicked() {
+					m.selectedRemote = ""
+				}
+				for i, remote := range m.remotes {
+					label := remote
+					if remote == m.selectedRemote {
+						label += " *"
+					}
+					if f.Button(remoteScope.At(i), label).Ghost().Small().Clicked() {
+						m.selectedRemote = remote
+					}
+				}
+			})
+		}
 		f.Divider()
 		f.ScrollArea(logScrollID).Grow(1).Children(func() {
-			for _, remote := range []bool{false, true} {
-				if remote {
+			for _, kind := range []int{0, 1, 2} {
+				if kind == 2 {
+					f.Text(text(i18n.Tags)).Muted().FontSize(12).PadY(7)
+				} else if kind == 1 {
 					f.Text(text(i18n.RemoteBranches)).Muted().FontSize(12).PadY(7)
 				} else {
 					f.Text(text(i18n.LocalBranches)).Muted().FontSize(12).PadY(7)
 				}
 				for i, ref := range m.refs {
-					if ref.Remote != remote {
+					if kind == 0 && (ref.Remote || ref.Tag) || kind == 1 && (!ref.Remote || ref.Tag) || kind == 2 && !ref.Tag {
 						continue
 					}
 					label := ref.Name
-					if !remote && ref.Name == m.status.Branch {
+					if !ref.Remote && !ref.Tag && ref.Name == m.status.Branch {
 						label = "* " + label
 					}
 					var row flex.Box
@@ -991,11 +1045,14 @@ func (m *Model) paintBranches(f *flex.Frame) {
 							HitWith(branchScope.At(i), ref.Name, ui.HitOptions{Role: ui.RoleButton, Hint: ref.SHA}).Children(func() {
 							f.Text(label).FontSize(12)
 							f.Text(ref.SHA[:8]).Mono().Muted().FontSize(11)
+							if ref.Track != "" {
+								f.Text(ref.Track).Muted().FontSize(11)
+							}
 							if ref.Upstream != "" {
 								f.Text(ref.Upstream).Muted().FontSize(11)
 							}
 						})
-						if !remote && ref.Name != m.status.Branch {
+						if !ref.Remote && !ref.Tag && ref.Name != m.status.Branch {
 							if f.Button(branchSwitchScope.At(i), text(i18n.SwitchBranch)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 								m.write("switch-branch", ref.Name, "")
 							}
@@ -1010,7 +1067,7 @@ func (m *Model) paintBranches(f *flex.Frame) {
 								m.mailbox.PlanDeleteBranch(m.ctx, m.repository, ref.Name, m.refsRequest, m.invalidator.Invalidate)
 							}
 						}
-						if !remote {
+						if !ref.Remote && !ref.Tag {
 							upstream := ref.Upstream
 							if upstream != "" {
 								if f.Button(tree.ID(feature, fmt.Sprintf("unset-upstream-%d", i)), text(i18n.UnsetUpstream)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
@@ -1023,7 +1080,7 @@ func (m *Model) paintBranches(f *flex.Frame) {
 								}
 							}
 						}
-						if remote {
+						if ref.Remote {
 							localName := ref.Name
 							if slash := strings.IndexByte(localName, '/'); slash >= 0 {
 								localName = localName[slash+1:]

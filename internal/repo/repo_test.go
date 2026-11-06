@@ -397,6 +397,7 @@ func TestRefsListsLocalAndRemoteBranches(t *testing.T) {
 	run("config", "user.name", "Refs Test")
 	run("config", "user.email", "refs@example.com")
 	run("commit", "--allow-empty", "-m", "initial")
+	run("tag", "v1.0")
 	run("branch", "feature/test")
 	run("config", "remote.origin.url", "../unused-remote.git")
 	run("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
@@ -410,16 +411,18 @@ func TestRefsListsLocalAndRemoteBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, remote := false, false
+	local, remote, tag := false, false, false
 	for _, ref := range refs {
 		switch {
 		case ref.Name == "feature/test" && !ref.Remote:
 			local = strings.HasSuffix(ref.Upstream, "origin/feature/test") && len(ref.SHA) == 40
 		case ref.Name == "origin/feature/test" && ref.Remote:
 			remote = len(ref.SHA) == 40
+		case ref.Name == "v1.0" && ref.Tag:
+			tag = ref.SHA == run("rev-parse", "v1.0")
 		}
 	}
-	if !local || !remote {
+	if !local || !remote || !tag {
 		t.Fatalf("missing local/upstream or remote ref: %+v", refs)
 	}
 	mainName := run("branch", "--show-current")
@@ -792,7 +795,12 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	run(localDir, "commit", "-m", "base")
 	run(localDir, "branch", "-M", "main")
 	run(localDir, "remote", "add", "origin", remoteDir)
+	backupDir := filepath.Join(root, "backup.git")
+	run(root, "clone", "--bare", remoteDir, backupDir)
+	run(localDir, "remote", "add", "backup", backupDir)
 	run(localDir, "push", "-u", "origin", "main")
+	run(localDir, "push", "backup", "main")
+	run(localDir, "fetch", "backup")
 	r, _, err := Open(context.Background(), gitPath, localDir)
 	if err != nil {
 		t.Fatal(err)
@@ -848,10 +856,10 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	if err != nil || !status.HasTrack || status.Ahead != 1 || status.Behind != 1 {
 		t.Fatalf("diverged upstream status: %+v, %v", status, err)
 	}
-	if err := r.RemoteWithPolicy(context.Background(), "pull", PullFFOnly, nil); err == nil {
+	if err := r.RemoteWithPolicy(context.Background(), "pull", "", PullFFOnly, nil); err == nil {
 		t.Fatal("fast-forward-only pull accepted diverged history")
 	}
-	if err := r.RemoteWithPolicy(context.Background(), "pull", PullRebase, nil); err != nil {
+	if err := r.RemoteWithPolicy(context.Background(), "pull", "", PullRebase, nil); err != nil {
 		t.Fatalf("rebase pull failed: %v", err)
 	}
 	pushPlan, err := r.PlanPush(context.Background())
@@ -879,7 +887,17 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	if got := run(remoteDir, "show", "main:late.txt"); got != "after preview" {
 		t.Fatalf("push did not update remote with refreshed plan: %q", got)
 	}
-	if err := r.RemoteWithPolicy(context.Background(), "pull", PullPolicy(99), nil); err == nil {
+	backupPlan, err := r.PlanPush(context.Background(), "backup")
+	if err != nil || backupPlan.Remote != "backup" || backupPlan.Branch != "main" || len(backupPlan.Commits) < 1 {
+		t.Fatalf("selected remote push preview: %+v, %v", backupPlan, err)
+	}
+	if err := r.ExecutePush(context.Background(), backupPlan, nil); err != nil {
+		t.Fatalf("push selected remote: %v", err)
+	}
+	if got := run(backupDir, "show", "main:late.txt"); got != "after preview" {
+		t.Fatalf("selected remote was not updated: %q", got)
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", "", PullPolicy(99), nil); err == nil {
 		t.Fatal("accepted unknown pull policy")
 	}
 	if err := r.Remote(context.Background(), "unknown", nil); err == nil {
