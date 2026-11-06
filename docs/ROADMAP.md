@@ -33,7 +33,7 @@
 | D1 | Go module 路径 | M0 使用本地模块名 `r-git-workbench`；确定发布仓库 owner 后再改为正式地址 | 发布前 |
 | D2 | 最低 Git 版本 | M0 暂定 2.34；较老版本显示警告，仅允许只读使用 | M1 验证 |
 | D3 | 文件监听实现 | 自写三平台实现（`ReadDirectoryChangesW` / FSEvents / inotify），不引入 fsnotify：fsnotify 在 macOS 用 kqueue，每个文件占一个描述符，不适合大仓库；已在 [viva#133](https://github.com/vivaui/viva/issues/133) 询问是否由 Viva 提供 | M1 前 |
-| D4 | Diff 视图：扩展 Viva `CodeDiff` 还是应用内自绘 | M1 先用 `CodeDiff` 做并排只读，hunk 勾选与上下排列看 [viva#131](https://github.com/vivaui/viva/issues/131) 进展，M5 前定 | M5 前 |
+| D4 | Diff 视图：扩展 Viva `CodeDiff` 还是应用内自绘 | 保留 `CodeDiff` 并排只读比较；应用层从 Git patch 拆分 hunk 并提供独立 Stage/Unstage 操作，不自绘另一套 Diff 控件 | 已决定 |
 | D5 | “Shift 两次”触发全局搜索 | 已提议 [viva#130](https://github.com/vivaui/viva/issues/130)；未支持前首发不提供此键位，规格偏差需记录 | M9 前 |
 | D6 | 内置 askpass 对话框 | 首发不做，依赖 credential helper / SSH agent | M4 前 |
 | D7 | Viva 性能预算与 parity 实现方案 | Go + Viva 已固定；M1 继续测量并对布局、Diff、无障碍和启动预算列出限制，不再作为更换技术栈的决策门 | M1 验收 |
@@ -62,6 +62,10 @@ Branches 页面通过 `for-each-ref` 展示本地、远程分支及 upstream；�
 ## M4 进度
 
 顶栏已接入 Fetch、Pull 和 Push，均在后台执行并在完成后刷新状态、引用与 Log；Git 的 CR/LF 进度消息逐行投递至窗口，远端操作可取消。Branches 页提供上游默认目标与多远端选择；Pull 支持 Merge、Rebase、Fast-forward only 三种策略，默认 Merge，选择仅保留在当前窗口会话中；当前分支相对已 fetch upstream 的 ahead/behind 计数从 porcelain v2 读取并在分支选择器中显示。常规 Push 先预览所选目标远端/分支、两侧 SHA 与待推提交，确认后重新校验计划再执行。Push/Pull 使用当前分支 upstream 的分支名映射所选远端；Fetch 可指定所选远端。无 upstream、网络、认证和 hook 错误保留原始 Git 输出。Force push with lease 使用预检计划、展示目标远端/分支和本地 SHA/预期远端 SHA、二次确认，并在执行前重新校验后运行显式 `--force-with-lease`。真实 bare 仓库测试覆盖普通同步、rebase、ff-only 拒绝分叉、ahead/behind 计数、多远端待推提交预览及过期计划/lease 拒绝。Pull 策略持久化及错误分类 UI 尚未实现，M4 未完成。首发继续依赖系统 credential helper/SSH agent，不提供内置 askpass。
+
+## M5 进度
+
+已实现从 Git unified diff 解析独立 hunk，支持多 hunk 选择后暂存/取消暂存，并校验补丁指纹。未暂存 hunk 可预检、确认后局部还原工作区，执行时重新校验状态和 Diff；真实仓库测试覆盖多 hunk 暂存、局部还原与过期计划拒绝。提交区支持 Amend、最近 20 条提交消息选择，以及 Commit and Push（提交成功后进入推送预览确认，失败保留草稿）。Discard 先展示目标文件并确认，计划绑定状态和工作区内容；tracked 文件只还原工作区，untracked 文件经确认后删除，index 保留。Changes 支持目录缩进树视图及折叠、扁平分组视图和 ignored 文件只读展示。仓库测试覆盖 ignored 路径查询；Driver 覆盖模式切换、Discard 确认、窄窗口布局。M5 仍有 parity 缺口：Diff 中用 hunk 按钮选择而不是逐行内联勾选；任意单行扩展、改动导航及 Diff 显示选项待实现。
 
 ## Rebased parity 任务基线（2026-11-06）
 

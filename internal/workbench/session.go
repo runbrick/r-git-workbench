@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -39,11 +40,15 @@ type Update struct {
 	Skip         int
 	Message      string
 	Files        []string
+	Messages     []string
+	Paths        []string
 	Refs         []git.Ref
 	BranchPlan   repo.BranchDeletePlan
 	CheckoutPlan repo.RemoteCheckoutPlan
 	PushPlan     repo.ForcePushPlan
 	PushPreview  repo.PushPlan
+	DiscardPlan  repo.DiscardPlan
+	RestorePlan  repo.RestoreHunkPlan
 	Remotes      []string
 }
 
@@ -72,6 +77,20 @@ func (session *Session) CommitDetails(ctx context.Context, r *repo.Repository, s
 	go func() {
 		message, files, err := r.CommitDetails(ctx, sha)
 		session.deliver(Update{Repository: r, Kind: "commit-details", Path: sha, Message: message, Files: files, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) RecentMessages(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
+	go func() {
+		messages, err := r.RecentCommitMessages(ctx, 20)
+		session.deliver(Update{Repository: r, Kind: "commit-messages", Messages: messages, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) Ignored(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
+	go func() {
+		paths, err := r.Ignored(ctx)
+		session.deliver(Update{Repository: r, Kind: "ignored", Paths: paths, Request: request, Err: err}, notify)
 	}()
 }
 
@@ -136,8 +155,23 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			err = r.Stage(ctx, path)
 		case "unstage":
 			err = r.Unstage(ctx, path)
+		case "stage-hunk", "unstage-hunk":
+			var selections []repo.HunkSelection
+			for _, item := range strings.Split(message, ",") {
+				var selection repo.HunkSelection
+				_, err = fmt.Sscanf(item, "%d:%s", &selection.Index, &selection.Expected)
+				if err != nil {
+					break
+				}
+				selections = append(selections, selection)
+			}
+			if err == nil {
+				err = r.ApplyHunks(ctx, path, selections, kind == "unstage-hunk", true)
+			}
 		case "commit":
 			err = r.Commit(ctx, message)
+		case "amend":
+			err = r.CommitWithOptions(ctx, message, true)
 		case "create-branch":
 			err = r.CreateBranch(ctx, path)
 		case "switch-branch":
@@ -169,6 +203,46 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			err = refreshErr
 		}
 		session.deliver(Update{Repository: r, Status: status, Path: path, Kind: kind, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanDiscard(ctx context.Context, r *repo.Repository, path string, request uint64, notify func()) {
+	go func() {
+		plan, err := r.PlanDiscard(ctx, path)
+		session.deliver(Update{Repository: r, Kind: "discard-plan", Path: path, DiscardPlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanRestoreHunks(ctx context.Context, r *repo.Repository, path string, selections []repo.HunkSelection, request uint64, notify func()) {
+	go func() {
+		plan, err := r.PlanRestoreHunks(ctx, path, selections)
+		session.deliver(Update{Repository: r, Kind: "restore-hunks-plan", Path: path, RestorePlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) RestoreHunks(ctx context.Context, r *repo.Repository, plan repo.RestoreHunkPlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.RestoreHunks(ctx, plan)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Path: plan.Path, Kind: "restore-hunks", Err: err}, notify)
+	}()
+}
+
+func (session *Session) Discard(ctx context.Context, r *repo.Repository, plan repo.DiscardPlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.Discard(ctx, plan)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Path: plan.Path, Kind: "discard", Err: err}, notify)
 	}()
 }
 

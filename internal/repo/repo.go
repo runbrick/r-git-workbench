@@ -239,6 +239,97 @@ type FileDiff struct {
 	Binary bool
 }
 
+type DiscardPlan struct {
+	Path       string
+	StatusHash string
+	Untracked  bool
+}
+
+func (r *Repository) PlanDiscard(ctx context.Context, path string) (DiscardPlan, error) {
+	if err := r.checkPath(path); err != nil {
+		return DiscardPlan{}, err
+	}
+	status, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"status", "--porcelain=v2", "-z", "--untracked-files=all"}, OutputLimit: 16 << 20})
+	if err != nil {
+		return DiscardPlan{}, fmt.Errorf("discard preflight status: %w: %s", err, status.Stderr)
+	}
+	parsed, err := git.ParseStatus(status.Stdout)
+	if err != nil {
+		return DiscardPlan{}, err
+	}
+	for _, file := range parsed.Files {
+		if file.Path != path {
+			continue
+		}
+		if file.Conflict {
+			return DiscardPlan{}, errors.New("cannot discard a conflicted file")
+		}
+		if file.Worktree == '.' && !file.Untracked {
+			return DiscardPlan{}, errors.New("file has no working tree changes")
+		}
+		contentHash, err := workingFileHash(filepath.Join(r.Root, filepath.FromSlash(path)))
+		if err != nil {
+			return DiscardPlan{}, err
+		}
+		state := append(append([]byte(nil), status.Stdout...), contentHash...)
+		return DiscardPlan{Path: path, StatusHash: fmt.Sprintf("%x", sha256.Sum256(state)), Untracked: file.Untracked}, nil
+	}
+	return DiscardPlan{}, errors.New("file has no discardable changes")
+}
+
+func workingFileHash(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []byte("missing"), nil
+		}
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte("symlink:"), []byte(target)...), nil
+	}
+	if !info.Mode().IsRegular() {
+		return []byte(fmt.Sprintf("mode:%o:size:%d:mtime:%d", info.Mode(), info.Size(), info.ModTime().UnixNano())), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(data)
+	return hash[:], nil
+}
+
+func (r *Repository) Discard(ctx context.Context, plan DiscardPlan) error {
+	if plan.Path == "" || plan.StatusHash == "" {
+		return errors.New("invalid discard plan")
+	}
+	if err := r.checkPath(plan.Path); err != nil {
+		return err
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanDiscard(ctx, plan.Path)
+	if err != nil {
+		return err
+	}
+	if current != plan {
+		return errors.New("working tree changed after discard preflight; review again")
+	}
+	args := []string{"restore", "--worktree", "--", plan.Path}
+	if plan.Untracked {
+		args = []string{"clean", "-f", "--", plan.Path}
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("discard: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
 var errTooLarge = errors.New("file exceeds comparison size limit")
 
 func Open(ctx context.Context, gitPath, directory string) (*Repository, git.Status, error) {
@@ -252,6 +343,10 @@ func Open(ctx context.Context, gitPath, directory string) (*Repository, git.Stat
 
 func (r *Repository) Status(ctx context.Context) (git.Status, error) {
 	return git.ReadStatus(ctx, r.runner, r.Root)
+}
+
+func (r *Repository) Ignored(ctx context.Context) ([]string, error) {
+	return git.ReadIgnored(ctx, r.runner, r.Root)
 }
 
 type PullPolicy uint8
@@ -682,6 +777,136 @@ func (r *Repository) Stage(ctx context.Context, path string) error {
 	return nil
 }
 
+type HunkSelection struct {
+	Index    int
+	Expected string
+}
+
+func (r *Repository) ApplyHunk(ctx context.Context, path string, index int, reverse bool, expected string) error {
+	return r.ApplyHunks(ctx, path, []HunkSelection{{Index: index, Expected: expected}}, reverse, true)
+}
+
+func (r *Repository) ApplyHunks(ctx context.Context, path string, selections []HunkSelection, reverse, toIndex bool) error {
+	if err := r.checkPath(path); err != nil {
+		return err
+	}
+	if len(selections) == 0 {
+		return errors.New("invalid diff hunk")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	return r.applyHunks(ctx, path, selections, reverse, toIndex)
+}
+
+func (r *Repository) applyHunks(ctx context.Context, path string, selections []HunkSelection, reverse, toIndex bool) error {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return err
+	}
+	var file *git.File
+	for i := range status.Files {
+		if status.Files[i].Path == path {
+			file = &status.Files[i]
+			break
+		}
+	}
+	if file == nil || file.Untracked || file.Conflict {
+		return errors.New("hunk operation requires a tracked, non-conflicted file")
+	}
+	patch, err := r.Diff(ctx, path, reverse && toIndex)
+	if err != nil {
+		return err
+	}
+	hunks, err := git.ParseHunks([]byte(patch))
+	if err != nil {
+		return err
+	}
+	selectedPatch := make([]byte, 0)
+	seen := make(map[int]struct{}, len(selections))
+	for _, selection := range selections {
+		if selection.Index < 0 || selection.Index >= len(hunks) {
+			return errors.New("diff changed; review the file again")
+		}
+		if _, duplicate := seen[selection.Index]; duplicate {
+			return errors.New("duplicate diff hunk selection")
+		}
+		seen[selection.Index] = struct{}{}
+		if fmt.Sprintf("%x", sha256.Sum256(hunks[selection.Index].Patch)) != selection.Expected {
+			return errors.New("diff hunk changed; review the file again")
+		}
+		selectedPatch = append(selectedPatch, hunks[selection.Index].Patch...)
+	}
+	args := []string{"apply", "--recount"}
+	if toIndex {
+		args = append(args, "--cached")
+	}
+	if reverse {
+		args = append(args, "--reverse")
+	}
+	args = append(args, "-")
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Stdin: bytes.NewReader(selectedPatch), Write: true})
+	if err != nil {
+		return fmt.Errorf("apply diff hunk: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+type RestoreHunkPlan struct {
+	Path       string
+	StatusHash string
+	Selections []HunkSelection
+}
+
+func (r *Repository) PlanRestoreHunks(ctx context.Context, path string, selections []HunkSelection) (RestoreHunkPlan, error) {
+	if len(selections) == 0 {
+		return RestoreHunkPlan{}, errors.New("select at least one diff hunk")
+	}
+	status, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"status", "--porcelain=v2", "-z", "--untracked-files=all"}, OutputLimit: 16 << 20})
+	if err != nil {
+		return RestoreHunkPlan{}, fmt.Errorf("restore hunk preflight status: %w: %s", err, status.Stderr)
+	}
+	parsed, err := git.ParseStatus(status.Stdout)
+	if err != nil {
+		return RestoreHunkPlan{}, err
+	}
+	for _, file := range parsed.Files {
+		if file.Path == path && !file.Untracked && !file.Conflict && file.Worktree != '.' {
+			patch, err := r.Diff(ctx, path, false)
+			if err != nil {
+				return RestoreHunkPlan{}, err
+			}
+			hunks, err := git.ParseHunks([]byte(patch))
+			if err != nil {
+				return RestoreHunkPlan{}, err
+			}
+			for _, selection := range selections {
+				if selection.Index < 0 || selection.Index >= len(hunks) || fmt.Sprintf("%x", sha256.Sum256(hunks[selection.Index].Patch)) != selection.Expected {
+					return RestoreHunkPlan{}, errors.New("diff changed; review the file again")
+				}
+			}
+			state := append(append([]byte(nil), status.Stdout...), []byte(patch)...)
+			return RestoreHunkPlan{Path: path, StatusHash: fmt.Sprintf("%x", sha256.Sum256(state)), Selections: slices.Clone(selections)}, nil
+		}
+	}
+	return RestoreHunkPlan{}, errors.New("file has no restorable working tree changes")
+}
+
+func (r *Repository) RestoreHunks(ctx context.Context, plan RestoreHunkPlan) error {
+	if plan.Path == "" || plan.StatusHash == "" || len(plan.Selections) == 0 {
+		return errors.New("invalid restore hunk plan")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanRestoreHunks(ctx, plan.Path, plan.Selections)
+	if err != nil {
+		return err
+	}
+	if current.Path != plan.Path || current.StatusHash != plan.StatusHash {
+		return errors.New("working tree changed after restore preflight; review again")
+	}
+	return r.applyHunks(ctx, plan.Path, plan.Selections, true, false)
+}
+
 func (r *Repository) CreateBranch(ctx context.Context, name string) error {
 	if err := r.checkBranchName(ctx, name); err != nil {
 		return err
@@ -939,14 +1164,43 @@ func (r *Repository) Unstage(ctx context.Context, path string) error {
 }
 
 func (r *Repository) Commit(ctx context.Context, message string) error {
+	return r.CommitWithOptions(ctx, message, false)
+}
+
+func (r *Repository) CommitWithOptions(ctx context.Context, message string, amend bool) error {
 	if strings.TrimSpace(message) == "" {
 		return errors.New("commit message is empty")
 	}
 	r.write.Lock()
 	defer r.write.Unlock()
-	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"commit", "-F", "-"}, Stdin: strings.NewReader(message), Write: true})
+	args := []string{"commit", "-F", "-"}
+	if amend {
+		args = append(args, "--amend")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Stdin: strings.NewReader(message), Write: true})
 	if err != nil {
 		return fmt.Errorf("commit: %w: %s", err, result.Stderr)
 	}
 	return nil
+}
+
+func (r *Repository) RecentCommitMessages(ctx context.Context, limit int) ([]string, error) {
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("invalid commit message history limit")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", fmt.Sprintf("-n%d", limit), "--format=%B%x00"}, OutputLimit: 1 << 20})
+	if err != nil {
+		if strings.Contains(string(result.Stderr), "does not have any commits yet") || strings.Contains(string(result.Stderr), "your current branch") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("commit message history: %w: %s", err, result.Stderr)
+	}
+	var messages []string
+	for _, message := range bytes.Split(result.Stdout, []byte{0}) {
+		value := strings.TrimSpace(string(message))
+		if value != "" && (len(messages) == 0 || messages[len(messages)-1] != value) {
+			messages = append(messages, value)
+		}
+	}
+	return messages, nil
 }

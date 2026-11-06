@@ -2,9 +2,12 @@ package shell
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/vivaui/viva/app"
@@ -57,6 +60,18 @@ var (
 	diffVScrollID      = tree.ID(feature, "comparison-vscroll")
 	diffHScrollID      = tree.ID(feature, "comparison-hscroll")
 	diffViewportID     = tree.ID(feature, "comparison-viewport")
+	hunkScope          = tree.Sub(feature, tree.Name("diff-hunks"))
+	amendID            = tree.ID(feature, "amend")
+	commitPushID       = tree.ID(feature, "commit-and-push")
+	messageHistoryID   = tree.ID(feature, "commit-message-history")
+	treeModeID         = tree.ID(feature, "changes-tree-mode")
+	flatModeID         = tree.ID(feature, "changes-flat-mode")
+	discardID          = tree.ID(feature, "discard")
+	discardConfirmID   = tree.ID(feature, "discard-confirm")
+	applyHunksID       = tree.ID(feature, "apply-selected-hunks")
+	restoreHunksID     = tree.ID(feature, "restore-selected-hunks")
+	restoreConfirmID   = tree.ID(feature, "restore-hunks-confirm")
+	ignoredToggleID    = tree.ID(feature, "show-ignored")
 	errorDetailsID     = tree.ID(feature, "error-details")
 	errorScrollID      = tree.ID(feature, "error-scroll")
 	logScope           = tree.Sub(feature, tree.Name("commits"))
@@ -96,6 +111,21 @@ type Model struct {
 	localBranchName      flex.Field
 	branchRenameOld      string
 	message              commitDraft
+	amend                bool
+	commitAndPush        bool
+	messageHistory       []string
+	messageLabels        []string
+	messageHistorySelect flex.SelectState
+	selectedHistory      int
+	treeMode             bool
+	discardPlan          *repo.DiscardPlan
+	restorePlan          *repo.RestoreHunkPlan
+	selectedHunks        []bool
+	restoreIgnored       bool
+	expandedPaths        map[string]bool
+	ignoredPaths         []string
+	ignoredRequest       uint64
+	messageRequest       uint64
 	logQuery             flex.Field
 	logAuthor            flex.Field
 	logPath              flex.Field
@@ -108,6 +138,7 @@ type Model struct {
 	selected             int
 	selectedStaged       bool
 	diff                 string
+	hunks                []git.Hunk
 	comparison           repo.FileDiff
 	aligned              components.CodeDiffResult
 	codeDiff             components.CodeDiff
@@ -218,11 +249,28 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 	m.logUntil.SetText("")
 	m.logRef.SetText("")
 	m.logFilter = repo.LogFilter{}
+	m.loadMessages()
 	m.resetLog()
 	m.watch(r)
 	m.loadLog()
 	m.loadRefs()
 	m.loadRemotes()
+}
+
+func (m *Model) loadMessages() {
+	if m.repository == nil {
+		return
+	}
+	m.messageRequest++
+	m.mailbox.RecentMessages(m.ctx, m.repository, m.messageRequest, m.invalidator.Invalidate)
+}
+
+func (m *Model) loadIgnored() {
+	if m.repository == nil {
+		return
+	}
+	m.ignoredRequest++
+	m.mailbox.Ignored(m.ctx, m.repository, m.ignoredRequest, m.invalidator.Invalidate)
 }
 
 func (m *Model) loadRefs() {
@@ -376,6 +424,16 @@ func (m *Model) startRemote(operation string) {
 	m.mailbox.Remote(ctx, m.repository, operation, m.selectedRemote, m.pullPolicy, m.invalidator.Invalidate)
 }
 
+func (m *Model) planPush() {
+	if m.repository == nil {
+		return
+	}
+	m.busy = true
+	m.activeOperation = "push-plan"
+	m.operationError = ""
+	m.mailbox.PlanPush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
+}
+
 // SetInitialGit applies startup detection before the window thread begins.
 func (m *Model) SetInitialGit(installation git.Installation, err error) {
 	m.Git, m.DetectionErr, m.Checking = installation, err, false
@@ -484,6 +542,15 @@ func (m *Model) Config() app.Config {
 				if update.Kind == "remotes" && update.Request != m.remotesRequest {
 					continue
 				}
+				if update.Kind == "commit-messages" && update.Request != m.messageRequest {
+					continue
+				}
+				if update.Kind == "ignored" && update.Request != m.ignoredRequest {
+					continue
+				}
+				if update.Kind == "discard-plan" && update.Request != m.request {
+					continue
+				}
 				if update.Kind == "refresh" && m.activeOperation != "refresh" {
 					continue
 				}
@@ -511,6 +578,10 @@ func (m *Model) Config() app.Config {
 						m.watch(update.Repository)
 						m.path.SetText("")
 						m.Active, m.selected, m.diff, m.showComparison = keymap.ShowLog, -1, "", false
+						m.loadMessages()
+						if m.restoreIgnored {
+							m.loadIgnored()
+						}
 						m.loadLog()
 						m.loadRefs()
 						m.loadRemotes()
@@ -519,6 +590,8 @@ func (m *Model) Config() app.Config {
 					if update.Err == nil && m.selected >= 0 && m.selected < len(m.status.Files) && m.status.Files[m.selected].Path == update.Path && m.selectedStaged == update.Staged {
 						m.diff = update.Diff
 						m.comparison, m.aligned = update.Comparison, update.Aligned
+						m.hunks, _ = git.ParseHunks([]byte(update.Diff))
+						m.selectedHunks = make([]bool, len(m.hunks))
 						m.showComparison = !update.Comparison.Binary
 					}
 				case "watch-error":
@@ -540,6 +613,30 @@ func (m *Model) Config() app.Config {
 				case "commit-details":
 					if update.Err == nil && update.Request == m.detailsRequest && update.Path == m.selectedCommit {
 						m.commitMessage, m.commitFiles = update.Message, update.Files
+					}
+				case "commit-messages":
+					if update.Err == nil {
+						m.messageHistory = update.Messages
+						m.messageLabels = make([]string, len(update.Messages))
+						for i, value := range update.Messages {
+							m.messageLabels[i] = strings.SplitN(strings.ReplaceAll(value, "\r", ""), "\n", 2)[0]
+						}
+					}
+				case "discard-plan":
+					if update.Err == nil {
+						m.discardPlan = &update.DiscardPlan
+					}
+				case "discard":
+					m.discardPlan = nil
+				case "restore-hunks-plan":
+					if update.Err == nil {
+						m.restorePlan = &update.RestorePlan
+					}
+				case "restore-hunks":
+					m.restorePlan = nil
+				case "ignored":
+					if update.Err == nil {
+						m.ignoredPaths = update.Paths
 					}
 				case "commit-file":
 					if update.Err == nil {
@@ -654,7 +751,7 @@ func (m *Model) Config() app.Config {
 						m.confirmForcePush = false
 					}
 				default:
-					if update.Kind == "stage" || update.Kind == "unstage" || update.Kind == "commit" || update.Kind == "create-branch" || update.Kind == "switch-branch" {
+					if update.Kind == "stage" || update.Kind == "unstage" || update.Kind == "stage-hunk" || update.Kind == "unstage-hunk" || update.Kind == "commit" || update.Kind == "amend" || update.Kind == "create-branch" || update.Kind == "switch-branch" {
 						m.watchPending = false
 					}
 					if update.Status.Root != "" {
@@ -667,10 +764,18 @@ func (m *Model) Config() app.Config {
 							m.request++
 						}
 					}
-					if update.Kind == "commit" && update.Err == nil {
+					if (update.Kind == "commit" || update.Kind == "amend") && update.Err == nil {
 						m.message.SetText("")
+						m.amend = false
 						m.resetLog()
 						m.loadRefs()
+						m.loadMessages()
+						if m.commitAndPush {
+							m.commitAndPush = false
+							m.planPush()
+						}
+					} else if update.Kind == "commit" || update.Kind == "amend" {
+						m.commitAndPush = false
 					}
 				}
 				if update.Kind != "diff" && update.Kind != "changed" && update.Kind != "watch-error" && update.Kind != "log" && update.Kind != "commit-details" && update.Kind != "commit-file" && update.Kind != "refs" && update.Kind != "remotes" && update.Kind != "remote-progress" {
@@ -799,10 +904,7 @@ func (m *Model) paintTop(f *flex.Frame) {
 				}
 				if f.Button(pushID, text(i18n.Push)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.Active = keymap.ShowBranches
-					m.busy = true
-					m.activeOperation = "push-plan"
-					m.operationError = ""
-					m.mailbox.PlanPush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
+					m.planPush()
 				}
 				if f.Button(tree.ID(feature, "force-push"), text(i18n.ForcePushWithLease)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.Active = keymap.ShowBranches
@@ -1153,20 +1255,60 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 				m.refresh()
 			}
 		})
+		f.Row().FillWidth().Height(28).PadX(8).Gap(4).Children(func() {
+			treeLabel := text(i18n.TreeView)
+			if m.treeMode {
+				treeLabel += " *"
+			}
+			if f.Button(treeModeID, treeLabel).Ghost().Small().Clicked() {
+				m.treeMode = true
+			}
+			flatLabel := text(i18n.FlatView)
+			if !m.treeMode {
+				flatLabel += " *"
+			}
+			if f.Button(flatModeID, flatLabel).Ghost().Small().Clicked() {
+				m.treeMode = false
+			}
+		})
 		f.Divider()
 		f.ScrollArea(fileListID).Grow(1).PadX(8).Children(func() {
-			m.paintGroup(f, i18n.ConflictedFiles, true, func(file git.File) bool { return file.Conflict })
-			m.paintGroup(f, i18n.StagedFiles, true, func(file git.File) bool { return file.Index != '.' && !file.Untracked && !file.Conflict })
-			m.paintGroup(f, i18n.UnstagedFiles, false, func(file git.File) bool { return file.Worktree != '.' && !file.Untracked && !file.Conflict })
-			m.paintGroup(f, i18n.UntrackedFiles, false, func(file git.File) bool { return file.Untracked })
+			if m.treeMode {
+				m.paintChangesTree(f)
+			} else {
+				m.paintGroup(f, i18n.ConflictedFiles, true, func(file git.File) bool { return file.Conflict })
+				m.paintGroup(f, i18n.StagedFiles, true, func(file git.File) bool { return file.Index != '.' && !file.Untracked && !file.Conflict })
+				m.paintGroup(f, i18n.UnstagedFiles, false, func(file git.File) bool { return file.Worktree != '.' && !file.Untracked && !file.Conflict })
+				m.paintGroup(f, i18n.UntrackedFiles, false, func(file git.File) bool { return file.Untracked })
+				m.paintIgnored(f)
+			}
 		})
 		f.Divider()
 		f.Column().FillWidth().Height(180).Pad(8).Gap(6).Children(func() {
-			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(123)
-			f.Spacer()
-			if f.Button(commitID, text(i18n.CommitButton)).Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
-				m.write("commit", "", m.message.Text())
+			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(68)
+			if len(m.messageHistory) > 0 {
+				if index, ok := f.Select(tree.Sub(feature, tree.Name("commit-message-history-options")), &m.messageHistorySelect, m.messageLabels, m.selectedHistory).Placeholder(text(i18n.CommitMessageHistory)).Small().Picked(); ok {
+					m.selectedHistory = index
+					m.message.SetText(m.messageHistory[index])
+				}
 			}
+			f.Row().FillWidth().Gap(4).Children(func() {
+				if f.Button(commitID, text(i18n.CommitButton)).Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
+					kind := "commit"
+					if m.amend {
+						kind = "amend"
+					}
+					m.write(kind, "", m.message.Text())
+				}
+				if f.Button(commitPushID, text(i18n.CommitAndPush)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
+					m.commitAndPush = true
+					kind := "commit"
+					if m.amend {
+						kind = "amend"
+					}
+					m.write(kind, "", m.message.Text())
+				}
+			})
 		})
 	})
 }
@@ -1183,6 +1325,12 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 		}
 		f.Row().FillWidth().Height(30).Gap(8).Items(flex.Center).Children(func() {
 			f.Text(text(i18n.Changes)).Bold().FontSize(14)
+			if f.Checkbox(ignoredToggleID, m.restoreIgnored).Label(text(i18n.ShowIgnored)).Small().Clicked() {
+				m.restoreIgnored = !m.restoreIgnored
+				if m.restoreIgnored && len(m.ignoredPaths) == 0 {
+					m.loadIgnored()
+				}
+			}
 			if m.selected >= 0 && m.selected < len(m.status.Files) {
 				f.Text(m.status.Files[m.selected].Path).Muted().FontSize(12).Ellipsis()
 			}
@@ -1215,6 +1363,64 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 				}
 			}
 		})
+		if len(m.hunks) > 0 && m.selected >= 0 && m.selected < len(m.status.Files) {
+			f.Row().FillWidth().Gap(4).Children(func() {
+				for index := range m.hunks {
+					label := text(i18n.StageHunk)
+					if m.selectedStaged {
+						label = text(i18n.UnstageHunk)
+					}
+					if m.selectedHunks[index] {
+						label = "[x] " + label
+					}
+					if f.Button(hunkScope.At(index), fmt.Sprintf("%s %d", label, index+1)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+						m.selectedHunks[index] = !m.selectedHunks[index]
+					}
+				}
+			})
+			selected := make([]repo.HunkSelection, 0, len(m.selectedHunks))
+			for index, checked := range m.selectedHunks {
+				if checked {
+					selected = append(selected, repo.HunkSelection{Index: index, Expected: fmt.Sprintf("%x", sha256.Sum256(m.hunks[index].Patch))})
+				}
+			}
+			if len(selected) > 0 {
+				f.Row().FillWidth().Gap(4).Children(func() {
+					applyLabel := text(i18n.ApplySelectedHunks)
+					if m.selectedStaged {
+						applyLabel = text(i18n.UnstageHunk)
+					}
+					if f.Button(applyHunksID, applyLabel).Small().Disabled(m.busy).Clicked() {
+						kind := "stage-hunk"
+						if m.selectedStaged {
+							kind = "unstage-hunk"
+						}
+						var packed strings.Builder
+						for i, item := range selected {
+							if i > 0 {
+								packed.WriteByte(',')
+							}
+							fmt.Fprintf(&packed, "%d:%s", item.Index, item.Expected)
+						}
+						m.write(kind, file.Path, packed.String())
+					}
+					if !m.selectedStaged && f.Button(restoreHunksID, text(i18n.RestoreSelectedHunks)).Ghost().Small().Disabled(m.busy).Clicked() {
+						m.request++
+						m.busy = true
+						m.activeOperation = "restore-hunks-plan"
+						m.mailbox.PlanRestoreHunks(m.ctx, m.repository, file.Path, selected, m.request, m.invalidator.Invalidate)
+					}
+				})
+			}
+		}
+		if file.Worktree != '.' || file.Untracked {
+			if f.Button(discardID, text(i18n.DiscardFile)).Small().Destructive().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+				m.request++
+				m.activeOperation = "discard-plan"
+				m.busy = true
+				m.mailbox.PlanDiscard(m.ctx, m.repository, file.Path, m.request, m.invalidator.Invalidate)
+			}
+		}
 		if m.showComparison {
 			m.diffSlot = f.Slot().Grow(1)
 		} else {
@@ -1229,6 +1435,147 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 			})
 		}
 	})
+	if m.discardPlan != nil {
+		dialog := f.Dialog(flex.DialogSpec{
+			Title: text(i18n.ConfirmDiscard), Description: m.discardPlan.Path, Width: 420,
+			Scope: tree.ID(feature, "discard-dialog"), DismissID: tree.ID(feature, "discard-dismiss"),
+			CloseID: tree.ID(feature, "discard-close"), InitialFocusID: discardConfirmID,
+		})
+		dialog.Body(func() {
+			f.Text(fmt.Sprintf("%s: %s", text(i18n.DiscardFile), m.discardPlan.Path)).FontSize(12)
+		})
+		dialog.Footer(func() {
+			if f.Button(tree.ID(feature, "discard-cancel"), text(i18n.Cancel)).Outline().Clicked() || dialog.Dismissed() {
+				m.discardPlan = nil
+				m.busy = false
+				m.activeOperation = ""
+			}
+			if f.Button(discardConfirmID, text(i18n.DiscardFile)).Destructive().Disabled(m.busy && m.activeOperation == "discard").Clicked() {
+				plan := *m.discardPlan
+				m.discardPlan = nil
+				m.busy = true
+				m.activeOperation = "discard"
+				m.mailbox.Discard(m.ctx, m.repository, plan, m.invalidator.Invalidate)
+			}
+		})
+	}
+	if m.restorePlan != nil {
+		dialog := f.Dialog(flex.DialogSpec{Title: text(i18n.ConfirmRestoreHunks), Description: m.restorePlan.Path, Width: 420,
+			Scope: tree.ID(feature, "restore-hunks-dialog"), DismissID: tree.ID(feature, "restore-hunks-dismiss"), CloseID: tree.ID(feature, "restore-hunks-close"), InitialFocusID: restoreConfirmID})
+		dialog.Body(func() {
+			f.Text(fmt.Sprintf("%s: %d", m.restorePlan.Path, len(m.restorePlan.Selections))).FontSize(12)
+		})
+		dialog.Footer(func() {
+			if f.Button(tree.ID(feature, "restore-hunks-cancel"), text(i18n.Cancel)).Outline().Clicked() || dialog.Dismissed() {
+				m.restorePlan = nil
+				m.busy = false
+				m.activeOperation = ""
+			}
+			if f.Button(restoreConfirmID, text(i18n.RestoreSelectedHunks)).Destructive().Clicked() {
+				plan := *m.restorePlan
+				m.restorePlan = nil
+				m.busy = true
+				m.activeOperation = "restore-hunks"
+				m.mailbox.RestoreHunks(m.ctx, m.repository, plan, m.invalidator.Invalidate)
+			}
+		})
+	}
+}
+
+func (m *Model) paintChangesTree(f *flex.Frame) {
+	indexes := make([]int, 0, len(m.status.Files))
+	for index := range m.status.Files {
+		indexes = append(indexes, index)
+	}
+	sort.Slice(indexes, func(i, j int) bool { return m.status.Files[indexes[i]].Path < m.status.Files[indexes[j]].Path })
+	lastGroup := -1
+	seenDirectories := make(map[string]struct{})
+	if m.expandedPaths == nil {
+		m.expandedPaths = make(map[string]bool)
+	}
+	for _, index := range indexes {
+		file := m.status.Files[index]
+		group := 0
+		title := i18n.StagedFiles
+		staged := true
+		switch {
+		case file.Conflict:
+			group, title = -1, i18n.ConflictedFiles
+		case file.Untracked:
+			group, title, staged = 2, i18n.UntrackedFiles, false
+		case file.Worktree != '.':
+			group, title, staged = 1, i18n.UnstagedFiles, false
+		}
+		if group != lastGroup {
+			f.Text(m.Language.Text(title)).Muted().FontSize(11).PadY(5)
+			lastGroup = group
+		}
+		directory := path.Dir(file.Path)
+		parts := strings.Split(directory, "/")
+		hidden := false
+		for level := range parts {
+			prefix := strings.Join(parts[:level+1], "/")
+			if prefix == "." {
+				continue
+			}
+			if _, ok := seenDirectories[prefix]; ok {
+				continue
+			}
+			seenDirectories[prefix] = struct{}{}
+			label := path.Base(prefix)
+			folderID := tree.ID(feature, "change-folder-"+prefix)
+			if _, exists := m.expandedPaths[prefix]; !exists {
+				m.expandedPaths[prefix] = true
+			}
+			if f.Button(folderID, label+"/").Ghost().Small().Clicked() {
+				m.expandedPaths[prefix] = !m.expandedPaths[prefix]
+			}
+			if !m.expandedPaths[prefix] {
+				hidden = true
+				break
+			}
+		}
+		if hidden {
+			continue
+		}
+		depth := strings.Count(directory, "/") + 1
+		if directory == "." {
+			depth = 0
+		}
+		label := file.Path
+		if file.Original != "" {
+			label = file.Original + " -> " + file.Path
+		}
+		id := fileScope.At(index * 2)
+		if staged {
+			id = fileScope.At(index*2 + 1)
+		}
+		selected := m.selected == index && m.selectedStaged == staged
+		color := ui.RGB(29, 31, 36)
+		if selected {
+			color = ui.RGB(43, 70, 117)
+		}
+		row := f.Row().FillWidth().Height(26).PadSides(0, 4, 0, float32(7+depth*12)).Gap(5).Items(flex.Center).
+			Background(color).HoverBackground(ui.RGB(47, 51, 59)).Hit(id, label).Children(func() {
+			f.Text(label).FontSize(12).Ellipsis()
+		})
+		if row.Clicked() {
+			m.selectFile(index, staged)
+		}
+	}
+	m.paintIgnored(f)
+}
+
+func (m *Model) paintIgnored(f *flex.Frame) {
+	if !m.restoreIgnored || len(m.ignoredPaths) == 0 {
+		return
+	}
+	f.Text(m.Language.Text(i18n.ShowIgnored)).Muted().FontSize(11).PadY(5)
+	for index, ignored := range m.ignoredPaths {
+		f.Row().FillWidth().Height(24).PadX(7).Hit(tree.Sub(feature, tree.Name("ignored-paths")).At(index), ignored).Children(func() {
+			f.Text(ignored).Muted().FontSize(11).Ellipsis()
+		})
+	}
 }
 
 func (m *Model) paintLog(f *flex.Frame) {

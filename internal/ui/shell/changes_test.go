@@ -274,6 +274,17 @@ func TestDriverOpenStageAndCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait(func() bool { return !m.busy && len(m.status.Files) == 1 && m.status.Files[0].Worktree == 'M' })
+	click(treeModeID)
+	if !m.treeMode {
+		t.Fatal("tree mode was not enabled")
+	}
+	if problems := headless.CheckLayout(driver.Snapshot()); len(problems) != 0 {
+		t.Fatalf("tree mode layout: %+v", problems)
+	}
+	click(flatModeID)
+	if m.treeMode {
+		t.Fatal("flat mode was not enabled")
+	}
 	other := t.TempDir()
 	cmd = exec.Command(gitPath, "init", other)
 	if output, err := cmd.CombinedOutput(); err != nil {
