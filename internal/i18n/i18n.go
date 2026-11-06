@@ -80,9 +80,18 @@ const (
 	ForcePushWithLease
 	ConfirmForcePush
 	PushTargets
+	PullMerge
+	PullRebase
+	PullFFOnly
+	PullPolicyLabel
+	SinceDate
+	UntilDate
+	AheadLabel
+	BehindLabel
+	PushPreview
 )
 
-var stringsByLanguage = [...][PushTargets + 1]string{
+var stringsByLanguage = [...][PushPreview + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -102,6 +111,11 @@ var stringsByLanguage = [...][PushTargets + 1]string{
 		"Delete this branch?", "Cancel",
 		"Uncommitted files may be affected:", "Stash and checkout", "Force checkout", "Confirm force checkout",
 		"Force push with lease", "Confirm force push", "Push targets (local -> expected remote)",
+		"Merge", "Rebase", "Fast-forward only",
+		"Policy:",
+		"Since (YYYY-MM-DD)", "Until (YYYY-MM-DD)",
+		"ahead", "behind",
+		"Push preview:",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -122,6 +136,11 @@ var stringsByLanguage = [...][PushTargets + 1]string{
 		"确认删除此分支？", "取消",
 		"以下未提交文件可能受影响：", "暂存改动并检出", "强制检出", "确认强制检出",
 		"带保护的强制推送", "确认强制推送", "推送目标（本地 -> 预期远端）",
+		"合并", "变基", "仅快进",
+		"策略：",
+		"起始日期（YYYY-MM-DD）", "结束日期（YYYY-MM-DD）",
+		"领先", "落后",
+		"推送预览：",
 	},
 }
 
@@ -138,7 +157,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > PushTargets {
+	if language > Chinese || key > PushPreview {
 		return ""
 	}
 	return stringsByLanguage[language][key]

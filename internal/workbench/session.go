@@ -43,6 +43,7 @@ type Update struct {
 	BranchPlan   repo.BranchDeletePlan
 	CheckoutPlan repo.RemoteCheckoutPlan
 	PushPlan     repo.ForcePushPlan
+	PushPreview  repo.PushPlan
 }
 
 func (session *Session) Refs(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
@@ -183,11 +184,11 @@ func (session *Session) ExecuteRemoteCheckout(ctx context.Context, r *repo.Repos
 	}()
 }
 
-func (session *Session) Remote(ctx context.Context, r *repo.Repository, operation string, notify func()) {
+func (session *Session) Remote(ctx context.Context, r *repo.Repository, operation string, policy repo.PullPolicy, notify func()) {
 	go func() {
 		session.writes.Lock()
 		defer session.writes.Unlock()
-		err := r.Remote(ctx, operation, func(line string) {
+		err := r.RemoteWithPolicy(ctx, operation, policy, func(line string) {
 			session.deliver(Update{Repository: r, Kind: "remote-progress", Message: line}, notify)
 		})
 		status, refreshErr := r.Status(ctx)
@@ -202,6 +203,28 @@ func (session *Session) PlanForcePush(ctx context.Context, r *repo.Repository, n
 	go func() {
 		plan, err := r.PlanForcePush(ctx)
 		session.deliver(Update{Repository: r, Kind: "force-push-plan", PushPlan: plan, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanPush(ctx context.Context, r *repo.Repository, notify func()) {
+	go func() {
+		plan, err := r.PlanPush(ctx)
+		session.deliver(Update{Repository: r, Kind: "push-plan", PushPreview: plan, Err: err}, notify)
+	}()
+}
+
+func (session *Session) ExecutePush(ctx context.Context, r *repo.Repository, plan repo.PushPlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.ExecutePush(ctx, plan, func(line string) {
+			session.deliver(Update{Repository: r, Kind: "remote-progress", Message: line}, notify)
+		})
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "remote-push", Err: err}, notify)
 	}()
 }
 

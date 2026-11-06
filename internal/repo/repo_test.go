@@ -801,6 +801,10 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	if err := r.Remote(context.Background(), "fetch", func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
+	status, err := r.Status(context.Background())
+	if err != nil || !status.HasTrack || status.Ahead != 0 || status.Behind != 0 {
+		t.Fatalf("synced upstream status: %+v, %v", status, err)
+	}
 	if err := os.Mkdir(otherDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -816,6 +820,10 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	if err := r.Remote(context.Background(), "fetch", func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
+	status, err = r.Status(context.Background())
+	if err != nil || !status.HasTrack || status.Ahead != 0 || status.Behind != 1 {
+		t.Fatalf("behind upstream status: %+v, %v", status, err)
+	}
 	if err := r.Remote(context.Background(), "pull", func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
@@ -827,11 +835,52 @@ func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
 	}
 	run(localDir, "add", "local.txt")
 	run(localDir, "commit", "-m", "local update")
-	if err := r.Remote(context.Background(), "push", func(line string) { progress = append(progress, line) }); err != nil {
+	if err := os.WriteFile(filepath.Join(otherDir, "other.txt"), []byte("diverged remote\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(otherDir, "add", "other.txt")
+	run(otherDir, "commit", "-m", "diverged remote update")
+	run(otherDir, "push", "origin", "main")
+	if err := r.Remote(context.Background(), "fetch", nil); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(context.Background())
+	if err != nil || !status.HasTrack || status.Ahead != 1 || status.Behind != 1 {
+		t.Fatalf("diverged upstream status: %+v, %v", status, err)
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", PullFFOnly, nil); err == nil {
+		t.Fatal("fast-forward-only pull accepted diverged history")
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", PullRebase, nil); err != nil {
+		t.Fatalf("rebase pull failed: %v", err)
+	}
+	pushPlan, err := r.PlanPush(context.Background())
+	if err != nil || len(pushPlan.Commits) != 1 || pushPlan.Commits[0].Subject != "local update" {
+		t.Fatalf("push preview: %+v, %v", pushPlan, err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "late.txt"), []byte("after preview\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "add", "late.txt")
+	run(localDir, "commit", "-m", "commit after preview")
+	if err := r.ExecutePush(context.Background(), pushPlan, nil); err == nil {
+		t.Fatal("stale push preview was executed")
+	}
+	pushPlan, err = r.PlanPush(context.Background())
+	if err != nil || len(pushPlan.Commits) != 2 {
+		t.Fatalf("refreshed push preview: %+v, %v", pushPlan, err)
+	}
+	if err := r.ExecutePush(context.Background(), pushPlan, func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
 	}
 	if got := run(remoteDir, "show", "main:local.txt"); got != "from local" {
 		t.Fatalf("push did not update remote: %q", got)
+	}
+	if got := run(remoteDir, "show", "main:late.txt"); got != "after preview" {
+		t.Fatalf("push did not update remote with refreshed plan: %q", got)
+	}
+	if err := r.RemoteWithPolicy(context.Background(), "pull", PullPolicy(99), nil); err == nil {
+		t.Fatal("accepted unknown pull policy")
 	}
 	if err := r.Remote(context.Background(), "unknown", nil); err == nil {
 		t.Fatal("accepted unknown remote operation")
@@ -955,5 +1004,15 @@ func TestLogFiltersPathAndAuthor(t *testing.T) {
 	missing, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Path: "missing.txt"})
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("missing path: %+v, %v", missing, err)
+	}
+	old, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Until: "2000-01-01"})
+	if err != nil || len(old) != 0 {
+		t.Fatalf("historical date filter: %+v, %v", old, err)
+	}
+	if _, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Since: "2025-02-30"}); err == nil {
+		t.Fatal("accepted invalid date filter")
+	}
+	if _, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Since: "2025-02-01", Until: "2025-01-01"}); err == nil {
+		t.Fatal("accepted inverted date range")
 	}
 }

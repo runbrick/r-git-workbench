@@ -34,6 +34,9 @@ var (
 	fetchID            = tree.ID(feature, "fetch")
 	pullID             = tree.ID(feature, "pull")
 	pushID             = tree.ID(feature, "push")
+	pullMergeID        = tree.ID(feature, "pull-policy-merge")
+	pullRebaseID       = tree.ID(feature, "pull-policy-rebase")
+	pullFFOnlyID       = tree.ID(feature, "pull-policy-ff-only")
 	searchID           = tree.ID(feature, "search")
 	pathID             = tree.ID(feature, "repository-path")
 	browseID           = tree.ID(feature, "browse")
@@ -64,6 +67,8 @@ var (
 	logFilterID        = tree.ID(feature, "log-filter")
 	logAuthorID        = tree.ID(feature, "log-author")
 	logPathID          = tree.ID(feature, "log-path")
+	logSinceID         = tree.ID(feature, "log-since")
+	logUntilID         = tree.ID(feature, "log-until")
 	filterSubmitID     = tree.ID(feature, "filter-submit")
 	filterClearID      = tree.ID(feature, "filter-clear")
 	commitFileScope    = tree.Sub(feature, tree.Name("commit-files"))
@@ -92,6 +97,8 @@ type Model struct {
 	logQuery             flex.Field
 	logAuthor            flex.Field
 	logPath              flex.Field
+	logSince             flex.Field
+	logUntil             flex.Field
 	logFilter            repo.LogFilter
 	repository           *repo.Repository
 	status               git.Status
@@ -127,7 +134,9 @@ type Model struct {
 	confirmForceCheckout bool
 	remoteCancel         context.CancelFunc
 	remoteProgress       string
+	pullPolicy           repo.PullPolicy
 	forcePushPlan        *repo.ForcePushPlan
+	pushPlan             *repo.PushPlan
 	confirmForcePush     bool
 	refsRequest          uint64
 	logLoading           bool
@@ -187,6 +196,8 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 	m.logQuery.SetText("")
 	m.logAuthor.SetText("")
 	m.logPath.SetText("")
+	m.logSince.SetText("")
+	m.logUntil.SetText("")
 	m.logFilter = repo.LogFilter{}
 	m.resetLog()
 	m.watch(r)
@@ -252,6 +263,8 @@ func (m *Model) applyLogFilter() {
 		Author:  strings.TrimSpace(m.logAuthor.Text()),
 		Path:    strings.TrimSpace(m.logPath.Text()),
 		Ref:     m.logFilter.Ref,
+		Since:   strings.TrimSpace(m.logSince.Text()),
+		Until:   strings.TrimSpace(m.logUntil.Text()),
 	}
 	if filter == m.logFilter {
 		return
@@ -328,7 +341,7 @@ func (m *Model) startRemote(operation string) {
 	m.operationError = ""
 	m.busy = true
 	m.activeOperation = "remote-" + operation
-	m.mailbox.Remote(ctx, m.repository, operation, m.invalidator.Invalidate)
+	m.mailbox.Remote(ctx, m.repository, operation, m.pullPolicy, m.invalidator.Invalidate)
 }
 
 // SetInitialGit applies startup detection before the window thread begins.
@@ -361,7 +374,7 @@ func (m *Model) Config() app.Config {
 				m.message.ensure()
 				return &m.message.input
 			}
-			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.logQuery, &m.logAuthor, &m.logPath)(context)
+			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.logQuery, &m.logAuthor, &m.logPath, &m.logSince, &m.logUntil)(context)
 		},
 		OnScroll: func(event ui.ScrollEvent) ui.EventResult {
 			if m.Active == keymap.ShowLog && contains(m.logTableBounds.Rect(), event.X, event.Y) {
@@ -447,6 +460,8 @@ func (m *Model) Config() app.Config {
 						m.logQuery.SetText("")
 						m.logAuthor.SetText("")
 						m.logPath.SetText("")
+						m.logSince.SetText("")
+						m.logUntil.SetText("")
 						m.logFilter = repo.LogFilter{}
 						m.resetLog()
 						m.refs = nil
@@ -514,6 +529,12 @@ func (m *Model) Config() app.Config {
 					}
 					m.busy = false
 					m.activeOperation = ""
+				case "push-plan":
+					if update.Err == nil {
+						m.pushPlan = &update.PushPreview
+					}
+					m.busy = false
+					m.activeOperation = ""
 				case "force-push-plan":
 					if update.Err == nil {
 						m.forcePushPlan = &update.PushPlan
@@ -577,7 +598,7 @@ func (m *Model) Config() app.Config {
 						m.watchPending = false
 					}
 					if update.Status.Root != "" {
-						unchanged := update.Kind == "refresh" && m.status.Root == update.Status.Root && m.status.Head == update.Status.Head && m.status.Branch == update.Status.Branch && slices.Equal(m.status.Files, update.Status.Files)
+						unchanged := update.Kind == "refresh" && m.status.Root == update.Status.Root && m.status.Head == update.Status.Head && m.status.Branch == update.Status.Branch && m.status.Ahead == update.Status.Ahead && m.status.Behind == update.Status.Behind && m.status.HasTrack == update.Status.HasTrack && slices.Equal(m.status.Files, update.Status.Files)
 						m.status = update.Status
 						if !unchanged {
 							m.diff = ""
@@ -672,6 +693,9 @@ func (m *Model) paintTop(f *flex.Frame) {
 		branch := text(i18n.NoBranch)
 		if m.repository != nil {
 			branch = m.status.Branch
+			if m.status.HasTrack {
+				branch += fmt.Sprintf("  ↑%d ↓%d", m.status.Ahead, m.status.Behind)
+			}
 		}
 		if f.Button(branchID, branch).Ghost().Small().Disabled(m.repository == nil).Clicked() {
 			m.Active = keymap.ShowBranches
@@ -687,11 +711,37 @@ func (m *Model) paintTop(f *flex.Frame) {
 				if f.Button(fetchID, text(i18n.Fetch)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.startRemote("fetch")
 				}
+				f.Text(text(i18n.PullPolicyLabel)).Muted().FontSize(11)
+				mergeLabel := text(i18n.PullMerge)
+				if m.pullPolicy == repo.PullMerge {
+					mergeLabel += " *"
+				}
+				if f.Button(pullMergeID, mergeLabel).Ghost().Small().Disabled(m.busy).Clicked() {
+					m.pullPolicy = repo.PullMerge
+				}
+				rebaseLabel := text(i18n.PullRebase)
+				if m.pullPolicy == repo.PullRebase {
+					rebaseLabel += " *"
+				}
+				if f.Button(pullRebaseID, rebaseLabel).Ghost().Small().Disabled(m.busy).Clicked() {
+					m.pullPolicy = repo.PullRebase
+				}
+				ffOnlyLabel := text(i18n.PullFFOnly)
+				if m.pullPolicy == repo.PullFFOnly {
+					ffOnlyLabel += " *"
+				}
+				if f.Button(pullFFOnlyID, ffOnlyLabel).Ghost().Small().Disabled(m.busy).Clicked() {
+					m.pullPolicy = repo.PullFFOnly
+				}
 				if f.Button(pullID, text(i18n.Pull)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.startRemote("pull")
 				}
 				if f.Button(pushID, text(i18n.Push)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
-					m.startRemote("push")
+					m.Active = keymap.ShowBranches
+					m.busy = true
+					m.activeOperation = "push-plan"
+					m.operationError = ""
+					m.mailbox.PlanPush(m.ctx, m.repository, m.invalidator.Invalidate)
 				}
 				if f.Button(tree.ID(feature, "force-push"), text(i18n.ForcePushWithLease)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.Active = keymap.ShowBranches
@@ -873,6 +923,32 @@ func (m *Model) paintBranches(f *flex.Frame) {
 					if f.Button(tree.ID(feature, "force-push-cancel"), text(i18n.Cancel)).Ghost().Small().Clicked() {
 						m.forcePushPlan = nil
 						m.confirmForcePush = false
+					}
+				})
+			})
+		}
+		if m.pushPlan != nil {
+			f.Column().FillWidth().Gap(5).Pad(8).Background(ui.RGB(43, 48, 54)).Children(func() {
+				f.Text(fmt.Sprintf("%s %s/%s  %s -> %s", text(i18n.PushPreview), m.pushPlan.Remote, m.pushPlan.Branch, m.pushPlan.Local[:min(8, len(m.pushPlan.Local))], m.pushPlan.Upstream[:min(8, len(m.pushPlan.Upstream))])).Mono().FontSize(11)
+				for _, commit := range m.pushPlan.Commits[:min(5, len(m.pushPlan.Commits))] {
+					f.Text(fmt.Sprintf("%s %s", commit.SHA[:8], commit.Subject)).FontSize(11).Ellipsis()
+				}
+				if len(m.pushPlan.Commits) > 5 {
+					f.Text(fmt.Sprintf("+%d", len(m.pushPlan.Commits)-5)).Muted().FontSize(11)
+				}
+				f.Row().FillWidth().Gap(6).Children(func() {
+					if f.Button(tree.ID(feature, "push-confirm"), text(i18n.Push)).Small().Disabled(m.busy).Clicked() {
+						plan := *m.pushPlan
+						m.pushPlan = nil
+						ctx, cancel := context.WithCancel(m.ctx)
+						m.remoteCancel = cancel
+						m.remoteProgress = text(i18n.Working)
+						m.busy = true
+						m.activeOperation = "remote-push"
+						m.mailbox.ExecutePush(ctx, m.repository, plan, m.invalidator.Invalidate)
+					}
+					if f.Button(tree.ID(feature, "push-cancel"), text(i18n.Cancel)).Ghost().Small().Clicked() {
+						m.pushPlan = nil
 					}
 				})
 			})
@@ -1090,11 +1166,21 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.applyLogFilter()
 				}
 			})
+			f.Row().FillWidth().Gap(4).Children(func() {
+				if f.Field(&m.logSince, logSinceID, text(i18n.SinceDate), text(i18n.SinceDate)).Grow(1).Submitted() {
+					m.applyLogFilter()
+				}
+				if f.Field(&m.logUntil, logUntilID, text(i18n.UntilDate), text(i18n.UntilDate)).Grow(1).Submitted() {
+					m.applyLogFilter()
+				}
+			})
 			if m.logFilter != (repo.LogFilter{}) {
 				if f.Button(filterClearID, text(i18n.ClearFilter)).Ghost().Clicked() {
 					m.logQuery.SetText("")
 					m.logAuthor.SetText("")
 					m.logPath.SetText("")
+					m.logSince.SetText("")
+					m.logUntil.SetText("")
 					m.logFilter.Ref = ""
 					m.applyLogFilter()
 				}
@@ -1118,7 +1204,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.logTableBounds = f.Table(&m.logTable, flex.TableSpec{
 						Rows: logScope, Header: logHeaderScope, Columns: columns, Source: &m.logSource,
 						RowHeight: 25,
-					}).FillWidth().Height(max(float32(110), m.height-44-36-16-24-26-24-26))
+					}).FillWidth().Height(max(float32(70), m.height-44-36-16-24-26-26-26-24-26))
 					if row, ok := m.logTableBounds.RowClicked(); ok && row < len(m.commits) {
 						m.selectCommit(m.commits[row].SHA)
 					}

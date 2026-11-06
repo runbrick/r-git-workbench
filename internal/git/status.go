@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"r-git-workbench/internal/gitexec"
@@ -19,10 +20,13 @@ type File struct {
 }
 
 type Status struct {
-	Root   string
-	Branch string
-	Head   string
-	Files  []File
+	Root     string
+	Branch   string
+	Head     string
+	Ahead    int
+	Behind   int
+	HasTrack bool
+	Files    []File
 }
 
 func ReadStatus(ctx context.Context, runner gitexec.Runner, directory string) (Status, error) {
@@ -56,6 +60,18 @@ func ParseStatus(data []byte) (Status, error) {
 		}
 		if strings.HasPrefix(line, "# branch.oid ") {
 			status.Head = strings.TrimPrefix(line, "# branch.oid ")
+		}
+		if strings.HasPrefix(line, "# branch.ab ") {
+			fields := strings.Fields(strings.TrimPrefix(line, "# branch.ab "))
+			if len(fields) != 2 || !strings.HasPrefix(fields[0], "+") || !strings.HasPrefix(fields[1], "-") {
+				return Status{}, fmt.Errorf("invalid branch ahead/behind header %q", line)
+			}
+			ahead, errAhead := strconv.Atoi(strings.TrimPrefix(fields[0], "+"))
+			behind, errBehind := strconv.Atoi(strings.TrimPrefix(fields[1], "-"))
+			if errAhead != nil || errBehind != nil || ahead < 0 || behind < 0 {
+				return Status{}, fmt.Errorf("invalid branch ahead/behind header %q", line)
+			}
+			status.Ahead, status.Behind, status.HasTrack = ahead, behind, true
 		}
 		data = data[end+1:]
 	}

@@ -48,6 +48,8 @@ type LogFilter struct {
 	Author  string
 	Path    string
 	Ref     string
+	Since   string
+	Until   string
 }
 
 func (r *Repository) LogQuery(ctx context.Context, skip, limit int, filter LogFilter) ([]git.Commit, error) {
@@ -68,6 +70,23 @@ func (r *Repository) LogQuery(ctx context.Context, skip, limit int, filter LogFi
 	}
 	if filter.Author != "" {
 		args = append(args, "--fixed-strings", "--regexp-ignore-case", "--author="+filter.Author)
+	}
+	if filter.Since != "" {
+		start, err := time.Parse("2006-01-02", filter.Since)
+		if err != nil {
+			return nil, errors.New("invalid log start date; expected YYYY-MM-DD")
+		}
+		args = append(args, fmt.Sprintf("--since=@%d", start.Unix()))
+	}
+	if filter.Until != "" {
+		end, err := time.Parse("2006-01-02", filter.Until)
+		if err != nil {
+			return nil, errors.New("invalid log end date; expected YYYY-MM-DD")
+		}
+		args = append(args, fmt.Sprintf("--before=@%d", end.AddDate(0, 0, 1).Unix()))
+	}
+	if filter.Since != "" && filter.Until != "" && filter.Since > filter.Until {
+		return nil, errors.New("log start date must not be after end date")
 	}
 	if filter.Path != "" {
 		if err := r.checkPath(filter.Path); err != nil {
@@ -220,13 +239,35 @@ func (r *Repository) Status(ctx context.Context) (git.Status, error) {
 	return git.ReadStatus(ctx, r.runner, r.Root)
 }
 
+type PullPolicy uint8
+
+const (
+	PullMerge PullPolicy = iota
+	PullRebase
+	PullFFOnly
+)
+
 func (r *Repository) Remote(ctx context.Context, operation string, progress func(string)) error {
+	return r.RemoteWithPolicy(ctx, operation, PullMerge, progress)
+}
+
+func (r *Repository) RemoteWithPolicy(ctx context.Context, operation string, policy PullPolicy, progress func(string)) error {
 	var args []string
 	switch operation {
 	case "fetch":
 		args = []string{"fetch", "--progress", "--prune"}
 	case "pull":
-		args = []string{"pull", "--progress", "--no-rebase"}
+		args = []string{"pull", "--progress"}
+		switch policy {
+		case PullMerge:
+			args = append(args, "--no-rebase")
+		case PullRebase:
+			args = append(args, "--rebase")
+		case PullFFOnly:
+			args = append(args, "--ff-only")
+		default:
+			return fmt.Errorf("unknown pull policy %d", policy)
+		}
 	case "push":
 		args = []string{"push", "--progress"}
 	default:
@@ -246,6 +287,82 @@ type ForcePushPlan struct {
 	Branch string
 	Local  string
 	Lease  string
+}
+
+type PushPlan struct {
+	Remote   string
+	Branch   string
+	Local    string
+	Upstream string
+	Commits  []git.Commit
+}
+
+func (r *Repository) PlanPush(ctx context.Context) (PushPlan, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return PushPlan{}, err
+	}
+	if status.Branch == "" || status.Branch == "(detached)" {
+		return PushPlan{}, errors.New("push requires a local branch")
+	}
+	upstream, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"for-each-ref", "--format=%(upstream)", "refs/heads/" + status.Branch}})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("read push upstream: %w: %s", err, upstream.Stderr)
+	}
+	upstreamRef := strings.TrimSpace(string(upstream.Stdout))
+	remote, branch, ok := strings.Cut(strings.TrimPrefix(upstreamRef, "refs/remotes/"), "/")
+	if !strings.HasPrefix(upstreamRef, "refs/remotes/") || !ok || remote == "" || branch == "" {
+		return PushPlan{}, errors.New("current branch has no usable upstream")
+	}
+	local, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("resolve local push target: %w: %s", err, local.Stderr)
+	}
+	remoteSHA, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", upstreamRef}})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("resolve remote push target: %w: %s", err, remoteSHA.Stderr)
+	}
+	commits, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", "--reverse", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00", upstreamRef + "..HEAD"}, OutputLimit: 4 << 20})
+	if err != nil {
+		return PushPlan{}, fmt.Errorf("list commits to push: %w: %s", err, commits.Stderr)
+	}
+	preview, err := git.ParseLog(commits.Stdout)
+	if err != nil {
+		return PushPlan{}, err
+	}
+	return PushPlan{Remote: remote, Branch: branch, Local: strings.TrimSpace(string(local.Stdout)), Upstream: strings.TrimSpace(string(remoteSHA.Stdout)), Commits: preview}, nil
+}
+
+func (r *Repository) ExecutePush(ctx context.Context, plan PushPlan, progress func(string)) error {
+	if plan.Remote == "" || plan.Branch == "" || plan.Local == "" || plan.Upstream == "" {
+		return errors.New("invalid push plan")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanPush(ctx)
+	if err != nil {
+		return err
+	}
+	if current.Remote != plan.Remote || current.Branch != plan.Branch || current.Local != plan.Local || current.Upstream != plan.Upstream || !sameCommits(current.Commits, plan.Commits) {
+		return errors.New("push targets changed after preflight; review a new plan")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"push", "--progress", plan.Remote, "HEAD:refs/heads/" + plan.Branch}, Write: true, OnProgress: progress})
+	if err != nil {
+		return fmt.Errorf("push: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func sameCommits(left, right []git.Commit) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].SHA != right[i].SHA || left[i].Author != right[i].Author || left[i].Date != right[i].Date || left[i].Subject != right[i].Subject || !slices.Equal(left[i].Parents, right[i].Parents) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Repository) PlanForcePush(ctx context.Context) (ForcePushPlan, error) {
