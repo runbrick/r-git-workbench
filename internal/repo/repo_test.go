@@ -1001,6 +1001,20 @@ func TestLogFiltersPathAndAuthor(t *testing.T) {
 	if err != nil || len(second) != 1 || second[0].Subject != "entry 0" {
 		t.Fatalf("filtered second page: %+v, %v", second, err)
 	}
+	refCommand := exec.Command(gitPath, "symbolic-ref", "HEAD")
+	refCommand.Dir = dir
+	refOutput, err := refCommand.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := strings.TrimSpace(string(refOutput))
+	byRef, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Ref: ref})
+	if err != nil || len(byRef) != 3 {
+		t.Fatalf("branch ref filter %q: %+v, %v", ref, byRef, err)
+	}
+	if _, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Ref: "--all"}); err == nil {
+		t.Fatal("accepted invalid log ref")
+	}
 	missing, err := r.LogQuery(context.Background(), 0, 10, LogFilter{Path: "missing.txt"})
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("missing path: %+v, %v", missing, err)

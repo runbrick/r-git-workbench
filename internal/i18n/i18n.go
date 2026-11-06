@@ -89,9 +89,10 @@ const (
 	AheadLabel
 	BehindLabel
 	PushPreview
+	RefFilter
 )
 
-var stringsByLanguage = [...][PushPreview + 1]string{
+var stringsByLanguage = [...][RefFilter + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -116,6 +117,7 @@ var stringsByLanguage = [...][PushPreview + 1]string{
 		"Since (YYYY-MM-DD)", "Until (YYYY-MM-DD)",
 		"ahead", "behind",
 		"Push preview:",
+		"Branch or ref",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -141,6 +143,7 @@ var stringsByLanguage = [...][PushPreview + 1]string{
 		"起始日期（YYYY-MM-DD）", "结束日期（YYYY-MM-DD）",
 		"领先", "落后",
 		"推送预览：",
+		"分支或引用",
 	},
 }
 
@@ -157,7 +160,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > PushPreview {
+	if language > Chinese || key > RefFilter {
 		return ""
 	}
 	return stringsByLanguage[language][key]

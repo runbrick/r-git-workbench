@@ -27,7 +27,7 @@ type Repository struct {
 
 func (r *Repository) Refs(ctx context.Context) ([]git.Ref, error) {
 	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{
-		"for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00", "refs/heads", "refs/remotes",
+		"for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:trackshort)%00", "refs/heads", "refs/remotes",
 	}, OutputLimit: 4 << 20})
 	if err != nil {
 		return nil, fmt.Errorf("list branches: %w: %s", err, result.Stderr)

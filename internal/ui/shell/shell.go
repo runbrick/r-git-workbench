@@ -69,6 +69,7 @@ var (
 	logPathID          = tree.ID(feature, "log-path")
 	logSinceID         = tree.ID(feature, "log-since")
 	logUntilID         = tree.ID(feature, "log-until")
+	logRefID           = tree.ID(feature, "log-ref")
 	filterSubmitID     = tree.ID(feature, "filter-submit")
 	filterClearID      = tree.ID(feature, "filter-clear")
 	commitFileScope    = tree.Sub(feature, tree.Name("commit-files"))
@@ -99,6 +100,7 @@ type Model struct {
 	logPath              flex.Field
 	logSince             flex.Field
 	logUntil             flex.Field
+	logRef               flex.Field
 	logFilter            repo.LogFilter
 	repository           *repo.Repository
 	status               git.Status
@@ -198,6 +200,7 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 	m.logPath.SetText("")
 	m.logSince.SetText("")
 	m.logUntil.SetText("")
+	m.logRef.SetText("")
 	m.logFilter = repo.LogFilter{}
 	m.resetLog()
 	m.watch(r)
@@ -258,11 +261,15 @@ func (m *Model) loadLog() {
 }
 
 func (m *Model) applyLogFilter() {
+	ref := strings.TrimSpace(m.logRef.Text())
+	if ref != "" && !strings.HasPrefix(ref, "refs/heads/") && !strings.HasPrefix(ref, "refs/remotes/") {
+		ref = "refs/heads/" + ref
+	}
 	filter := repo.LogFilter{
 		Message: strings.TrimSpace(m.logQuery.Text()),
 		Author:  strings.TrimSpace(m.logAuthor.Text()),
 		Path:    strings.TrimSpace(m.logPath.Text()),
-		Ref:     m.logFilter.Ref,
+		Ref:     ref,
 		Since:   strings.TrimSpace(m.logSince.Text()),
 		Until:   strings.TrimSpace(m.logUntil.Text()),
 	}
@@ -374,7 +381,7 @@ func (m *Model) Config() app.Config {
 				m.message.ensure()
 				return &m.message.input
 			}
-			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.logQuery, &m.logAuthor, &m.logPath, &m.logSince, &m.logUntil)(context)
+			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.logQuery, &m.logAuthor, &m.logPath, &m.logSince, &m.logUntil, &m.logRef)(context)
 		},
 		OnScroll: func(event ui.ScrollEvent) ui.EventResult {
 			if m.Active == keymap.ShowLog && contains(m.logTableBounds.Rect(), event.X, event.Y) {
@@ -462,6 +469,7 @@ func (m *Model) Config() app.Config {
 						m.logPath.SetText("")
 						m.logSince.SetText("")
 						m.logUntil.SetText("")
+						m.logRef.SetText("")
 						m.logFilter = repo.LogFilter{}
 						m.resetLog()
 						m.refs = nil
@@ -504,6 +512,14 @@ func (m *Model) Config() app.Config {
 				case "refs":
 					if update.Err == nil {
 						m.refs = update.Refs
+						for _, ref := range m.refs {
+							if !ref.Remote && ref.Name == m.status.Branch && ref.Track != "" {
+								m.status.Ahead = strings.Count(ref.Track, ">")
+								m.status.Behind = strings.Count(ref.Track, "<")
+								m.status.HasTrack = true
+								break
+							}
+						}
 					}
 				case "create-branch":
 					if update.Err == nil {
@@ -1174,6 +1190,11 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.applyLogFilter()
 				}
 			})
+			f.Row().FillWidth().Gap(4).Children(func() {
+				if f.Field(&m.logRef, logRefID, text(i18n.RefFilter), text(i18n.RefFilter)).Grow(1).Submitted() {
+					m.applyLogFilter()
+				}
+			})
 			if m.logFilter != (repo.LogFilter{}) {
 				if f.Button(filterClearID, text(i18n.ClearFilter)).Ghost().Clicked() {
 					m.logQuery.SetText("")
@@ -1181,6 +1202,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.logPath.SetText("")
 					m.logSince.SetText("")
 					m.logUntil.SetText("")
+					m.logRef.SetText("")
 					m.logFilter.Ref = ""
 					m.applyLogFilter()
 				}
@@ -1204,7 +1226,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.logTableBounds = f.Table(&m.logTable, flex.TableSpec{
 						Rows: logScope, Header: logHeaderScope, Columns: columns, Source: &m.logSource,
 						RowHeight: 25,
-					}).FillWidth().Height(max(float32(70), m.height-44-36-16-24-26-26-26-24-26))
+					}).FillWidth().Height(max(float32(55), m.height-44-36-16-24-26-26-26-26-24-26))
 					if row, ok := m.logTableBounds.RowClicked(); ok && row < len(m.commits) {
 						m.selectCommit(m.commits[row].SHA)
 					}

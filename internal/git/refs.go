@@ -11,10 +11,11 @@ type Ref struct {
 	Name     string
 	SHA      string
 	Upstream string
+	Track    string
 	Remote   bool
 }
 
-// ParseRefs reads NUL-terminated (refname, objectname, upstream) triples.
+// ParseRefs reads NUL-terminated (refname, objectname, upstream, track) records.
 func ParseRefs(data []byte) ([]Ref, error) {
 	var refs []Ref
 	for len(data) > 0 {
@@ -22,7 +23,7 @@ func ParseRefs(data []byte) ([]Ref, error) {
 		if len(data) == 0 {
 			break
 		}
-		var fields [3]string
+		var fields [4]string
 		for i := range fields {
 			end := bytes.IndexByte(data, 0)
 			if end < 0 {
@@ -31,7 +32,7 @@ func ParseRefs(data []byte) ([]Ref, error) {
 			fields[i] = string(data[:end])
 			data = data[end+1:]
 		}
-		ref := Ref{FullName: fields[0], Name: fields[0], SHA: fields[1], Upstream: fields[2]}
+		ref := Ref{FullName: fields[0], Name: fields[0], SHA: fields[1], Upstream: fields[2], Track: fields[3]}
 		switch {
 		case strings.HasPrefix(ref.Name, "refs/heads/"):
 			ref.Name = ref.Name[len("refs/heads/"):]
