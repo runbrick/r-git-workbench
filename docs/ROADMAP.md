@@ -79,17 +79,68 @@ Rebased 是 IntelliJ Community 派生产品，Git 插件本身依赖 IntelliJ �
 
 | 任务 | 当前不足与目标 | 验收 |
 |---|---|---|
-| P1 基线清单 | 将 `git4idea`、`git-features-trainer`、`git-modal-commit`、GitHub、GitLab、Terminal、TextMate 的用户可见入口和默认配置逐项登记；区分 Git 客户端能力与 IntelliJ IDE 能力 | 每项有源码/界面证据、优先级、实现状态、Go/Viva 承载方案和测试；未实现项不从清单删除 |
-| P2 主窗口视觉 | 当前界面只有大体区域借鉴；核对顶部品牌区、仓库/分支组合框、同步按钮、工具窗 rail、Commit/Shelf 标签、Changes 工具栏、中央 Log 筛选条和表格、Branches 侧栏、右侧文件树/提交详情、底部状态栏 | 以固定尺寸基线截图制作标注图和差异截图；分区、顺序、相对尺寸、行高、留白、边框、颜色层级及选中态逐项验收；只替换品牌资产 |
-| P3 分栏和工具窗 | 当前面板组合、显示/隐藏和尺寸记忆未等同 Rebased；缺少完整命名视图和工具窗行为 | 面板可拖动/隐藏/恢复，状态按仓库持久化；窄尺寸下无重叠、裁切，headless `expect layout clean` 通过 |
-| P4 Commit 与 Shelf | 复刻 Commit/Shelf 模式切换、暂存区浏览、提交选项、Amend、检查、Commit、Commit and Push、失败后草稿/选择保留 | Driver 覆盖切换模式、选项和焦点；临时 Git 仓库覆盖 hooks、identity、失败恢复及提交范围 |
-| P5 Changes 与 Diff | 完成冲突置顶、树/扁平、分组动作、ignored 展示选项、行/hunk 暂存、局部撤销、三版本比较、外部打开、路径复制、差异导航和 Diff 显示选项 | Git patch/index 结果与系统 Git 对照；大/二进制文件可用；有损动作显示影响并二次确认 |
-| P6 Branch/Refs | 完成分支弹出树与列表、搜索、Recent、favorite/group/filter、远端选择、checkout/create/rename/delete/upstream、tag、从 Log 操作分支，以及 worktree 间状态提示 | 每个动作来自基线动作表；重命名、未合并删除、覆盖和过期状态有仓库测试与确认 UI 测试 |
-| P7 Log | 完成分支/ref 侧栏和筛选语义、引用装饰、作者/提交者/日期/路径列、图形布局、文件树、详情、Diff、比较、复制、检出/建分支/Cherry-pick/Revert/Reset/Push to commit 等上下文操作 | 构造复杂历史及大仓库测试；图随分页连续，所有危险操作计划绑定状态并验证 |
-| P8 历史编辑与冲突 | 完成交互式 Rebase（reorder/squash/fixup/reword/drop）、cherry-pick 序列、revert、reset/uncommit、merge/rebase 冲突、三方视图、接受 ours/theirs/both、手改、continue/skip/abort | 真实临时仓库覆盖成功、冲突、取消、hook 失败与部分操作后的恢复；三方 UI 在 Viva 能力不足时按架构评估自绘/API |
-| P9 Stash/Shelf | 明确 IntelliJ Shelf 与 Git Stash 的语义差别；实现 Rebased 用户可见的 Git stash 操作和 Shelf 面板等价行为，不将二者错误合并为同一 Git 对象 | save/apply/pop/drop/branch/show diff/冲突恢复以及面板持久化均有测试 |
-| P10 设置与动作 | 完成默认设置盘点、Git 路径/配置/identity/remotes/pull 策略、提交检查、keymap/Find Action 等产品可承载的操作入口；呈现命令结果和脱敏诊断 | 设置持久化、键盘导航、动作查找、快捷键冲突、国际化和无障碍测试通过 |
-| P11 Hosting 集成 | 盘点 GitHub/GitLab 插件包含的 clone/auth/status、PR/MR 浏览/创建/checkout/review 用户流程；区分 Git 核心不依赖账号与平台集成可选 | 按基线流程逐项实现等价入口；凭据交由安全凭据机制；无账号时核心 Git 流程完整 |
-| P12 Terminal/TextMate | 评估 Rebased 默认 Terminal 和 TextMate 功能；Viva 若无通用终端组件，先登记能力差距和可复用 Viva API，不能在 Git 绘制层私造终端模拟器 | 用户可见能力与决定均在清单；新增发布依赖测量剥离体积、启动时间和空闲内存 |
+| P1 基线清单 | 已完成，见 [REBASED_ACTION_INVENTORY.md](REBASED_ACTION_INVENTORY.md)：`git4idea` 约115个动作逐项登记（已实现≈18、部分实现≈12、未实现≈85），`git-features-trainer`/`git-modal-commit`/GitHub/GitLab/Terminal/TextMate 已登记并给出排除/延后建议 | 每项有源码/界面证据、优先级、实现状态、Go/Viva 承载方案和测试；未实现项不从清单删除 |
+| P2 主窗口视觉 | 已完成差异盘点，见 [REBASED_UI_PARITY_GAPS.md](REBASED_UI_PARITY_GAPS.md)：逐区域对照基线截图，发现3项P0功能性缺陷（Copy SHA按钮无动作、Amend开关无UI入口、文件状态字母徽标缺失）及Log筛选条/文件树结构/顶栏信息架构等P1视觉结构性差异；实现尚未开始 | 以固定尺寸基线截图制作标注图和差异截图；分区、顺序、相对尺寸、行高、留白、边框、颜色层级及选中态逐项验收；只替换品牌资产 |
+| P3 分栏和工具窗 | 已完成差异盘点，见 [REBASED_SPLITTER_PERSISTENCE_GAPS.md](REBASED_SPLITTER_PERSISTENCE_GAPS.md)：确认整个应用目前无任何跨会话持久化机制（`internal/settings` 包未建立，`ARCHITECTURE.md` §7 设计未落地）；三个可调分栏均不记忆尺寸/不按仓库隔离；Log两侧栏用宽度硬阈值隐藏而非用户可控折叠；900-1000px 过渡区间无测试覆盖 | 面板可拖动/隐藏/恢复，状态按仓库持久化；窄尺寸下无重叠、裁切，headless `expect layout clean` 通过 |
+| P4 Commit 与 Shelf | 已完成差异盘点，见 [REBASED_COMMIT_SHELF_GAPS.md](REBASED_COMMIT_SHELF_GAPS.md)：确认 Amend 后端已支持但 UI 入口零引用（`amendID` 声明后从未被绘制代码使用）；Identity 检测两端均不存在；Commit and Push 组合流程无端到端测试；Shelf tab 路由已正确指向 Stash，只需改显示文案 | Driver 覆盖切换模式、选项和焦点；临时 Git 仓库覆盖 hooks、identity、失败恢复及提交范围 |
+| P5 Changes 与 Diff | 已完成差异盘点，见 [REBASED_CHANGES_DIFF_GAPS.md](REBASED_CHANGES_DIFF_GAPS.md)：冲突置顶在树视图下失效（扁平视图正确）；分组级批量操作两端均不存在；hunk勾选UI独立于CodeDiff组件实现，Viva框架修复不会自动带来行级能力；二进制文件展示的是git diff原始文本而非结构化类型/大小信息，且该渲染路径无任何Diff工具栏能力；外部打开/路径复制/差异导航/三版本同屏均为彻底空白 | Git patch/index 结果与系统 Git 对照；大/二进制文件可用；有损动作显示影响并二次确认 |
+| P6 Branch/Refs | 已完成差异盘点，见 [REBASED_BRANCH_REFS_GAPS.md](REBASED_BRANCH_REFS_GAPS.md)：远程分支checkout的Plan/Execute两段式安全检查实现质量高，但本地分支切换`SwitchBranch`疑似无对等的应用层预检，依赖Git原生拒绝；删除未合并分支无"未合并提交"预检提示；Tag后端零函数，导航项落入错误占位文案；分支列表缺搜索/Recent分组；Worktree范围规格从未提及，需用户决策 | 每个动作来自基线动作表；重命名、未合并删除、覆盖和过期状态有仓库测试与确认 UI 测试 |
+| P7 Log | 已完成差异盘点，见 [REBASED_LOG_GAPS.md](REBASED_LOG_GAPS.md)：commit graph 轨道数硬编码6条且溢出时会把不相关分支误画成同一条线（正确性bug非性能问题）；作者/提交者数据源只采集author，committer完全未采集；引用标签是纯文字拼接无图标无颜色区分，且前缀硬编码英文未走i18n；Log表格不支持多选，比较任意两提交无从实现；"10000条提交"现有测试只验证内存虚拟化，大仓库真实加载/图形计算性能从未测试 | 构造复杂历史及大仓库测试；图随分页连续，所有危险操作计划绑定状态并验证（该项依赖P8范围功能，P7阶段暂不适用） |
+| P8 历史编辑与冲突 | 已完成差异盘点（含技术路线评估），见 [REBASED_HISTORY_CONFLICT_GAPS.md](REBASED_HISTORY_CONFLICT_GAPS.md)：阻塞性地基缺失——仓库完全无法检测是否处于merge/rebase/cherry-pick进行中（不读`.git/MERGE_HEAD`等），几乎所有P8功能依赖它；三方合并视图建议首发走路线A（AcceptOurs/Theirs/Both简化操作，不等Viva修复#132）；交互式Rebase拖拽重排是全新发现的未提issue的Viva缺口，建议首发用上移/下移按钮替代；现有Plan/Execute安全模式可部分复用于Reset/Merge/Rebase | 真实临时仓库覆盖成功、冲突、取消、hook 失败与部分操作后的恢复；三方 UI 在 Viva 能力不足时按架构评估自绘/API |
+| P9 Stash/Shelf | 已完成差异盘点（含从零设计评估），见 [REBASED_STASH_GAPS.md](REBASED_STASH_GAPS.md)：后端零实现（唯一stash调用是远程checkout流程内部借用，非独立功能）；`ShowStash`与`ShowTags`共享同一处占位文案bug（P6同一代码位置）；关键设计点——stash apply/pop冲突不产生`.git/MERGE_HEAD`等持久化标记，P8的仓库级操作状态检测地基无法覆盖，需P9自行维护会话级"当前冲突来自哪个stash"状态；建议面板布局裁剪复用paintLog的列表+详情结构，数据模型参考ParseLog模式但用新结构体 | save/apply/pop/drop/branch/show diff/冲突恢复以及面板持久化均有测试 |
+| P10 设置与动作 | 已完成差异盘点，见 [REBASED_SETTINGS_ACTIONS_GAPS.md](REBASED_SETTINGS_ACTIONS_GAPS.md)：动作注册表仅6个导航项，无上下文/选中项字段，`OnShortcut`从未调用，`OnKey`硬编码绕开动作系统；待动作化操作约百位量级，`ActionID uint8`裸枚举值不能直接做持久化键（需稳定字符串标识符层）；设置项分三类（已有运行时字段只差持久化/全新两端都要做/框架限制不适用）；命令日志零记录但`gitexec.Runner.Run`是现成扩展点；Find Action命令面板不应在动作注册表内容充实前提前做 | 设置持久化、键盘导航、动作查找、快捷键冲突、国际化和无障碍测试通过 |
+| P11 Hosting 集成 | 已完成差异盘点（含决策选项矩阵），见 [REBASED_HOSTING_GAPS.md](REBASED_HOSTING_GAPS.md)："无账号时核心Git流程完整"验收标准已满足（远程操作纯基于remote URL字符串，无平台耦合，有代码证据）；凭据处理零自建逻辑，符合规格；核心决策待用户裁定——是否引入GitHub/GitLab账号体系；折中方案：不登录也可用平台固定ref约定（`refs/pull/<N>/head`等）fetch已知PR/MR对应代码，工作量小且不引入新凭据逻辑 | 按基线流程逐项实现等价入口；凭据交由安全凭据机制；无账号时核心 Git 流程完整（已验证通过） |
+| P12 Terminal/TextMate | 已完成差异盘点，见 [REBASED_TERMINAL_TEXTMATE_GAPS.md](REBASED_TERMINAL_TEXTMATE_GAPS.md)："在外部终端打开"/"在文件管理器打开"（后者是P1-P11全系列遗漏项，本次补上）均零实现，跨平台路径明确，不触发依赖测量义务；建议先查`D:/viva`的`app`包源码确认有无等价API再自行实现；关键独立新发现——Viva `CodeDiffSnapshot`已提供`Language`/`Highlight`可插拔语法高亮回调且与TextMate决策无关，当前两处调用点完全未设置，是否启用需用户界定"不做语法高亮"的排除边界 | 用户可见能力与决定均在清单；新增发布依赖测量剥离体积、启动时间和空闲内存 |
 
 P1 是所有 parity 工作的盘点门槛。P2-P4 是贯穿 M2-M13 的 UI parity 任务，在 M11 汇总验收；P5-P10 按现有 Git 能力阶段落入 M5-M10，并以 parity 标准重新打开验收；P11-P12 归入 M13。任务完成条件还包括 `gofmt -l .`、`go vet ./...`、`go test ./... -count=1`，UI/input 改动附 Driver/headless 验证，不打开真实窗口，除非用户同意。
+
+## 实施顺序建议（P1-P12 盘点完成后，2026-11-06）
+
+P1-P12 十二份差异盘点文档已全部产出（见上表链接）。本节基于这些文档的发现，给出下一步开工的顺序建议，核心原则：地基先于功能、决策先于实现、技术确定项先于不确定项。
+
+### 第零阶段：三块地基（互相独立，可并行开工，是后续多数工作的前提）
+
+1. **新建 `internal/settings` 包**（P3）——落地 `docs/ARCHITECTURE.md` §7 已设计的方案（用户配置 `settings.json` + 每仓库 `repos/<路径哈希>.json`）。没有它，分栏尺寸记忆、Log 筛选记忆、Pull 策略持久化等都无法落地。
+2. **仓库级操作状态检测**（P8）——新增读取 `.git/MERGE_HEAD`、`.git/rebase-merge/`、`.git/rebase-apply/`、`.git/CHERRY_PICK_HEAD`、`.git/REVERT_HEAD` 的函数。没有它，Merge/Rebase/Cherry-pick 的 Continue/Skip/Abort 和顶栏进行中状态指示都无法正确工作。
+3. **重新设计动作注册表**（`internal/keymap`，P10）——`ActionID`/`Action` 结构体加"适用上下文"和"是否需要选中项"字段；持久化键改用稳定字符串标识符，不直接用 `ActionID uint8` 裸值（避免未来枚举重排导致存量配置错位）。
+
+三项谁先谁后不重要，但不产出用户可见新功能，建议作为单独的地基投入排期，不要和功能开发混排。
+
+### 第一阶段：独立的小缺陷修复（随时可做，不依赖地基，适合穿插在地基开发间隙完成）
+
+- Amend 开关补 UI 入口（P4，`amendID` 已声明，后端已支持，只缺一个 Checkbox）
+- Copy SHA 按钮补复制到剪贴板逻辑（P2，按钮已画出但无 `.Clicked()` 处理）
+- 文件状态字母徽标（M/A/D/R/U/?）补齐（P2，同时是无障碍要求）
+- `ShowTags`/`ShowStash` 共享的错误占位文案修复（P6、P9 发现是同一处代码 `shell.go:965-973`）
+- `graph.go` 引用标签前缀硬编码英文改走 i18n（P7，确认是孤例不是系统性问题）
+- 本地分支切换（`SwitchBranch`）补安全预检，对齐远程 checkout 已有的 Plan/Execute 高质量模式（P6）
+
+### 第二阶段：需要先做产品范围决策的三个问题（技术工作量都不大，但决定了后面怎么排期，建议尽早定）
+
+- GitHub/GitLab 账号体系要不要做（P11 给出选项矩阵；有一个工作量很小的折中方案——不登录，靠平台固定 ref 约定如 `refs/pull/<N>/head` 直接 fetch 已知 PR 对应代码）
+- `CodeDiffSnapshot.Highlight` 语法高亮回调要不要启用（P12，技术上现成可用，纯粹是"不做语法高亮"这条规格排除范围怎么划）
+- Worktree 管理要不要纳入范围（P6，规格从未提及，不是遗漏是未决）
+
+### 第三阶段：向 Viva 框架提需求（在正式写相关功能前先确认，避免应用层绕过框架职责）
+
+- 列表拖拽重排序是否支持（P8，交互式 Rebase 的 reorder 需要，此前没人问过，建议先查 `D:/viva` 源码或提 issue，若不支持用"上移/下移按钮"作为首发替代）
+- 跨平台"打开外部程序/在文件管理器中显示"是否已有 API（P12，建议先查 `D:/viva` 的 `app` 包源码，若无则直接用标准库 `os/exec` 实现，不违反"先问框架"原则）
+
+### 第四阶段：核心 Git 工作流功能开发（依赖第零阶段地基）
+
+按 P8 文档的工作量分级：
+1. 小工作量、技术确定：Reset(soft/mixed)、Merge/Rebase/CherryPick/Revert 的 Abort、冲突简化操作（Accept Ours/Theirs/Both，路线A，不等三方可编辑视图）、Merge/Rebase 发起对话框
+2. 中等工作量、依赖地基：Continue/Skip、Reset(hard) 完整数据丢失预览、Cherry-pick/Revert 主流程
+3. 大工作量、技术不确定（押后，先用简化方案上线不阻塞）：三方合并可编辑 Result 面板、交互式 Rebase 的拖拽排序本身（动作标记 pick/squash/fixup/reword/drop 不含拖拽部分可以先做）
+
+### 第五阶段：Stash（P9，依赖地基，可与第四阶段并行）
+
+注意 P9 的关键发现：Stash apply/pop 冲突不产生 `.git/MERGE_HEAD` 等持久化标记，第零阶段第2项的检测机制不能直接覆盖，需要新增一个会话级"当前冲突来自哪个 stash 操作"的临时状态。
+
+### 第六阶段：动作注册表内容填满后才有意义的呈现层
+
+命令面板（Find Action）、三套快捷键预设（IntelliJ/VSCode/Default）——这两者本质是"动作注册表的 UI 呈现层"，在第四、五阶段大部分操作完成动作化之前提前做，验证不出真实价值，建议排在后面。
+
+### 第七阶段：收尾
+
+Hosting 集成实现（若第二阶段决定要做）、"在外部终端打开"/"在文件管理器打开"命令、设置界面 UI 本身（依赖 `internal/settings` 和各设置项后端能力先就位）。
