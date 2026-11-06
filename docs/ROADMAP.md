@@ -65,7 +65,7 @@ Branches 页面通过 `for-each-ref` 展示本地、远程分支及 upstream；�
 
 ## M5 进度
 
-已实现从 Git unified diff 解析独立 hunk，并用 `git apply --cached` 及反向应用完成 hunk 级暂存/取消暂存；操作重新读取当前 diff 并在 hunk 已变化时拒绝执行。真实仓库测试验证 index 与工作区分别只包含预期改动。提交区已支持 Amend、最近 20 条提交消息选择，以及 Commit and Push；后者提交成功后进入已有推送目标/提交预览确认流程，提交失败保留草稿。Driver 测试覆盖提交面板在窄窗口布局下无重叠。M5 仍未完成：Discard 的预检/确认流程与目录树/扁平模式切换尚未实现；hunk UI 当前通过独立按钮操作，未提供 Diff 行内勾选及任意单行扩展交互。
+已实现从 Git unified diff 解析独立 hunk，并用 `git apply --cached` 及反向应用完成 hunk 级暂存/取消暂存；操作重新读取当前 diff 并校验补丁指纹。真实仓库测试验证 index 与工作区分别只包含预期改动。提交区已支持 Amend、最近 20 条提交消息选择，以及 Commit and Push；后者提交成功后进入已有推送目标/提交预览确认流程，提交失败保留草稿。Discard 先展示目标文件并确认，计划绑定状态和工作区内容，执行时重新校验；tracked 文件只还原工作区，untracked 文件经确认后删除，index 保留。Changes 列表支持目录层级缩进的树视图与扁平分组视图。Driver 覆盖模式切换、Discard 确认和窄窗口布局。M5 仍有 parity 缺口：hunk 操作通过独立按钮选择，尚无 Diff 行内勾选及任意单行扩展交互；树视图尚无目录折叠、ignored 文件显示设置，另有规格列出的行内局部撤销未实现。
 
 ## Rebased parity 任务基线（2026-11-06）
 

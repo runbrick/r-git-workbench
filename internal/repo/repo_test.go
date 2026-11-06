@@ -276,6 +276,95 @@ func TestApplyHunkStagesAndUnstagesOnlySelectedChange(t *testing.T) {
 	}
 }
 
+func TestDiscardPreflightAndExecution(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	command := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	command("init")
+	command("config", "user.name", "Test")
+	command("config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command("add", "tracked.txt")
+	command("commit", "-m", "base")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackedPath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(trackedPath, []byte("changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	trackedPlan, err := r.PlanDiscard(context.Background(), "tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Discard(context.Background(), trackedPlan); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(trackedPath); strings.ReplaceAll(string(got), "\r\n", "\n") != "base\n" {
+		t.Fatalf("tracked file after discard: %q", got)
+	}
+	if err := os.WriteFile(trackedPath, []byte("staged\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Stage(context.Background(), "tracked.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trackedPath, []byte("working edit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stagedPlan, err := r.PlanDiscard(context.Background(), "tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Discard(context.Background(), stagedPlan); err != nil {
+		t.Fatal(err)
+	}
+	if got := command("diff", "--cached", "--", "tracked.txt"); !strings.Contains(got, "+staged") {
+		t.Fatalf("discard changed index: %s", got)
+	}
+	if err := os.WriteFile(trackedPath, []byte("staged and working\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := r.PlanDiscard(context.Background(), "tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trackedPath, []byte("changed after preflight\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Discard(context.Background(), stale); err == nil {
+		t.Fatal("discard accepted stale preflight")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("untracked\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	untracked, err := r.PlanDiscard(context.Background(), "untracked.txt")
+	if err != nil || !untracked.Untracked {
+		t.Fatalf("untracked preflight: %+v, %v", untracked, err)
+	}
+	if err := r.Discard(context.Background(), untracked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "untracked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("untracked file still exists: %v", err)
+	}
+}
+
 func TestCompareLargeFileFallsBackToPatch(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {

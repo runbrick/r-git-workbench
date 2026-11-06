@@ -15,6 +15,9 @@ func ParseHunks(patch []byte) ([]Hunk, error) {
 	lines := bytes.SplitAfter(patch, []byte{'\n'})
 	headerEnd := -1
 	for i, line := range lines {
+		if bytes.HasPrefix(line, []byte("GIT binary patch")) || bytes.HasPrefix(line, []byte("Binary files ")) {
+			return nil, fmt.Errorf("binary diff has no text hunks")
+		}
 		if bytes.HasPrefix(line, []byte("@@ ")) {
 			headerEnd = i
 			break

@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/vivaui/viva/app"
@@ -62,6 +64,10 @@ var (
 	amendID            = tree.ID(feature, "amend")
 	commitPushID       = tree.ID(feature, "commit-and-push")
 	messageHistoryID   = tree.ID(feature, "commit-message-history")
+	treeModeID         = tree.ID(feature, "changes-tree-mode")
+	flatModeID         = tree.ID(feature, "changes-flat-mode")
+	discardID          = tree.ID(feature, "discard")
+	discardConfirmID   = tree.ID(feature, "discard-confirm")
 	errorDetailsID     = tree.ID(feature, "error-details")
 	errorScrollID      = tree.ID(feature, "error-scroll")
 	logScope           = tree.Sub(feature, tree.Name("commits"))
@@ -107,6 +113,8 @@ type Model struct {
 	messageLabels        []string
 	messageHistorySelect flex.SelectState
 	selectedHistory      int
+	treeMode             bool
+	discardPlan          *repo.DiscardPlan
 	messageRequest       uint64
 	logQuery             flex.Field
 	logAuthor            flex.Field
@@ -519,6 +527,9 @@ func (m *Model) Config() app.Config {
 				if update.Kind == "commit-messages" && update.Request != m.messageRequest {
 					continue
 				}
+				if update.Kind == "discard-plan" && update.Request != m.request {
+					continue
+				}
 				if update.Kind == "refresh" && m.activeOperation != "refresh" {
 					continue
 				}
@@ -546,6 +557,7 @@ func (m *Model) Config() app.Config {
 						m.watch(update.Repository)
 						m.path.SetText("")
 						m.Active, m.selected, m.diff, m.showComparison = keymap.ShowLog, -1, "", false
+						m.loadMessages()
 						m.loadLog()
 						m.loadRefs()
 						m.loadRemotes()
@@ -585,6 +597,12 @@ func (m *Model) Config() app.Config {
 							m.messageLabels[i] = strings.SplitN(strings.ReplaceAll(value, "\r", ""), "\n", 2)[0]
 						}
 					}
+				case "discard-plan":
+					if update.Err == nil {
+						m.discardPlan = &update.DiscardPlan
+					}
+				case "discard":
+					m.discardPlan = nil
 				case "commit-file":
 					if update.Err == nil {
 						m.commitFileDiff, m.commitFileAligned, m.commitFileReady = update.Comparison, update.Aligned, true
@@ -1202,16 +1220,36 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 				m.refresh()
 			}
 		})
+		f.Row().FillWidth().Height(28).PadX(8).Gap(4).Children(func() {
+			treeLabel := text(i18n.TreeView)
+			if m.treeMode {
+				treeLabel += " *"
+			}
+			if f.Button(treeModeID, treeLabel).Ghost().Small().Clicked() {
+				m.treeMode = true
+			}
+			flatLabel := text(i18n.FlatView)
+			if !m.treeMode {
+				flatLabel += " *"
+			}
+			if f.Button(flatModeID, flatLabel).Ghost().Small().Clicked() {
+				m.treeMode = false
+			}
+		})
 		f.Divider()
 		f.ScrollArea(fileListID).Grow(1).PadX(8).Children(func() {
-			m.paintGroup(f, i18n.ConflictedFiles, true, func(file git.File) bool { return file.Conflict })
-			m.paintGroup(f, i18n.StagedFiles, true, func(file git.File) bool { return file.Index != '.' && !file.Untracked && !file.Conflict })
-			m.paintGroup(f, i18n.UnstagedFiles, false, func(file git.File) bool { return file.Worktree != '.' && !file.Untracked && !file.Conflict })
-			m.paintGroup(f, i18n.UntrackedFiles, false, func(file git.File) bool { return file.Untracked })
+			if m.treeMode {
+				m.paintChangesTree(f)
+			} else {
+				m.paintGroup(f, i18n.ConflictedFiles, true, func(file git.File) bool { return file.Conflict })
+				m.paintGroup(f, i18n.StagedFiles, true, func(file git.File) bool { return file.Index != '.' && !file.Untracked && !file.Conflict })
+				m.paintGroup(f, i18n.UnstagedFiles, false, func(file git.File) bool { return file.Worktree != '.' && !file.Untracked && !file.Conflict })
+				m.paintGroup(f, i18n.UntrackedFiles, false, func(file git.File) bool { return file.Untracked })
+			}
 		})
 		f.Divider()
 		f.Column().FillWidth().Height(180).Pad(8).Gap(6).Children(func() {
-			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(88)
+			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(68)
 			if len(m.messageHistory) > 0 {
 				if index, ok := f.Select(tree.Sub(feature, tree.Name("commit-message-history-options")), &m.messageHistorySelect, m.messageLabels, m.selectedHistory).Placeholder(text(i18n.CommitMessageHistory)).Small().Picked(); ok {
 					m.selectedHistory = index
@@ -1219,10 +1257,10 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 				}
 			}
 			f.Spacer()
+			if f.Checkbox(amendID, m.amend).Label(text(i18n.Amend)).Clicked() {
+				m.amend = !m.amend
+			}
 			f.Row().FillWidth().Gap(4).Children(func() {
-				if f.Checkbox(amendID, m.amend).Label(text(i18n.Amend)).Clicked() {
-					m.amend = !m.amend
-				}
 				if f.Button(commitID, text(i18n.CommitButton)).Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
 					kind := "commit"
 					if m.amend {
@@ -1305,6 +1343,14 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 				}
 			})
 		}
+		if file.Worktree != '.' || file.Untracked {
+			if f.Button(discardID, text(i18n.DiscardFile)).Small().Destructive().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+				m.request++
+				m.activeOperation = "discard-plan"
+				m.busy = true
+				m.mailbox.PlanDiscard(m.ctx, m.repository, file.Path, m.request, m.invalidator.Invalidate)
+			}
+		}
 		if m.showComparison {
 			m.diffSlot = f.Slot().Grow(1)
 		} else {
@@ -1319,6 +1365,81 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 			})
 		}
 	})
+	if m.discardPlan != nil {
+		dialog := f.Dialog(flex.DialogSpec{
+			Title: text(i18n.ConfirmDiscard), Description: m.discardPlan.Path, Width: 420,
+			Scope: tree.ID(feature, "discard-dialog"), DismissID: tree.ID(feature, "discard-dismiss"),
+			CloseID: tree.ID(feature, "discard-close"), InitialFocusID: discardConfirmID,
+		})
+		dialog.Body(func() {
+			f.Text(fmt.Sprintf("%s: %s", text(i18n.DiscardFile), m.discardPlan.Path)).FontSize(12)
+		})
+		dialog.Footer(func() {
+			if f.Button(tree.ID(feature, "discard-cancel"), text(i18n.Cancel)).Outline().Clicked() || dialog.Dismissed() {
+				m.discardPlan = nil
+				m.busy = false
+				m.activeOperation = ""
+			}
+			if f.Button(discardConfirmID, text(i18n.DiscardFile)).Destructive().Disabled(m.busy && m.activeOperation == "discard").Clicked() {
+				plan := *m.discardPlan
+				m.discardPlan = nil
+				m.busy = true
+				m.activeOperation = "discard"
+				m.mailbox.Discard(m.ctx, m.repository, plan, m.invalidator.Invalidate)
+			}
+		})
+	}
+}
+
+func (m *Model) paintChangesTree(f *flex.Frame) {
+	indexes := make([]int, 0, len(m.status.Files))
+	for index := range m.status.Files {
+		indexes = append(indexes, index)
+	}
+	sort.Slice(indexes, func(i, j int) bool { return m.status.Files[indexes[i]].Path < m.status.Files[indexes[j]].Path })
+	lastGroup := -1
+	for _, index := range indexes {
+		file := m.status.Files[index]
+		group := 0
+		title := i18n.StagedFiles
+		staged := true
+		switch {
+		case file.Conflict:
+			group, title = -1, i18n.ConflictedFiles
+		case file.Untracked:
+			group, title, staged = 2, i18n.UntrackedFiles, false
+		case file.Worktree != '.':
+			group, title, staged = 1, i18n.UnstagedFiles, false
+		}
+		if group != lastGroup {
+			f.Text(m.Language.Text(title)).Muted().FontSize(11).PadY(5)
+			lastGroup = group
+		}
+		depth := strings.Count(path.Dir(file.Path), "/") + 1
+		if path.Dir(file.Path) == "." {
+			depth = 0
+		}
+		label := file.Path
+		if file.Original != "" {
+			label = file.Original + " -> " + file.Path
+		}
+		id := fileScope.At(index * 2)
+		if staged {
+			id = fileScope.At(index*2 + 1)
+		}
+		selected := m.selected == index && m.selectedStaged == staged
+		color := ui.RGB(29, 31, 36)
+		if selected {
+			color = ui.RGB(43, 70, 117)
+		}
+		row := f.Row().FillWidth().Height(26).PadSides(0, 4, 0, float32(7+depth*12)).Gap(5).Items(flex.Center).
+			Background(color).HoverBackground(ui.RGB(47, 51, 59)).Hit(id, label).Children(func() {
+			f.Text(label).FontSize(12).Ellipsis()
+		})
+		if row.Clicked() {
+			m.selectFile(index, staged)
+		}
+	}
 }
 
 func (m *Model) paintLog(f *flex.Frame) {

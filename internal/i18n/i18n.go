@@ -97,9 +97,13 @@ const (
 	Amend
 	CommitAndPush
 	CommitMessageHistory
+	DiscardFile
+	ConfirmDiscard
+	TreeView
+	FlatView
 )
 
-var stringsByLanguage = [...][CommitMessageHistory + 1]string{
+var stringsByLanguage = [...][FlatView + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -129,6 +133,7 @@ var stringsByLanguage = [...][CommitMessageHistory + 1]string{
 		"Upstream",
 		"Stage hunk", "Unstage hunk",
 		"Amend", "Commit + Push", "Recent commit messages",
+		"Discard", "Discard these working tree changes?", "Tree", "Flat",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -159,6 +164,7 @@ var stringsByLanguage = [...][CommitMessageHistory + 1]string{
 		"上游",
 		"暂存区块", "取消暂存区块",
 		"修改上次提交", "提交 + 推送", "最近提交消息",
+		"丢弃", "确认丢弃这些工作区更改？", "目录树", "扁平",
 	},
 }
 
@@ -175,7 +181,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > CommitMessageHistory {
+	if language > Chinese || key > FlatView {
 		return ""
 	}
 	return stringsByLanguage[language][key]

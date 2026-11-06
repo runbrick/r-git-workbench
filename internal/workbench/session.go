@@ -46,6 +46,7 @@ type Update struct {
 	CheckoutPlan repo.RemoteCheckoutPlan
 	PushPlan     repo.ForcePushPlan
 	PushPreview  repo.PushPlan
+	DiscardPlan  repo.DiscardPlan
 	Remotes      []string
 }
 
@@ -187,6 +188,26 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			err = refreshErr
 		}
 		session.deliver(Update{Repository: r, Status: status, Path: path, Kind: kind, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanDiscard(ctx context.Context, r *repo.Repository, path string, request uint64, notify func()) {
+	go func() {
+		plan, err := r.PlanDiscard(ctx, path)
+		session.deliver(Update{Repository: r, Kind: "discard-plan", Path: path, DiscardPlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) Discard(ctx context.Context, r *repo.Repository, plan repo.DiscardPlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.Discard(ctx, plan)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Path: plan.Path, Kind: "discard", Err: err}, notify)
 	}()
 }
 

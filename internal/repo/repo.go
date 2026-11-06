@@ -239,6 +239,97 @@ type FileDiff struct {
 	Binary bool
 }
 
+type DiscardPlan struct {
+	Path       string
+	StatusHash string
+	Untracked  bool
+}
+
+func (r *Repository) PlanDiscard(ctx context.Context, path string) (DiscardPlan, error) {
+	if err := r.checkPath(path); err != nil {
+		return DiscardPlan{}, err
+	}
+	status, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"status", "--porcelain=v2", "-z", "--untracked-files=all"}, OutputLimit: 16 << 20})
+	if err != nil {
+		return DiscardPlan{}, fmt.Errorf("discard preflight status: %w: %s", err, status.Stderr)
+	}
+	parsed, err := git.ParseStatus(status.Stdout)
+	if err != nil {
+		return DiscardPlan{}, err
+	}
+	for _, file := range parsed.Files {
+		if file.Path != path {
+			continue
+		}
+		if file.Conflict {
+			return DiscardPlan{}, errors.New("cannot discard a conflicted file")
+		}
+		if file.Worktree == '.' && !file.Untracked {
+			return DiscardPlan{}, errors.New("file has no working tree changes")
+		}
+		contentHash, err := workingFileHash(filepath.Join(r.Root, filepath.FromSlash(path)))
+		if err != nil {
+			return DiscardPlan{}, err
+		}
+		state := append(append([]byte(nil), status.Stdout...), contentHash...)
+		return DiscardPlan{Path: path, StatusHash: fmt.Sprintf("%x", sha256.Sum256(state)), Untracked: file.Untracked}, nil
+	}
+	return DiscardPlan{}, errors.New("file has no discardable changes")
+}
+
+func workingFileHash(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []byte("missing"), nil
+		}
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte("symlink:"), []byte(target)...), nil
+	}
+	if !info.Mode().IsRegular() {
+		return []byte(fmt.Sprintf("mode:%o:size:%d:mtime:%d", info.Mode(), info.Size(), info.ModTime().UnixNano())), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(data)
+	return hash[:], nil
+}
+
+func (r *Repository) Discard(ctx context.Context, plan DiscardPlan) error {
+	if plan.Path == "" || plan.StatusHash == "" {
+		return errors.New("invalid discard plan")
+	}
+	if err := r.checkPath(plan.Path); err != nil {
+		return err
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanDiscard(ctx, plan.Path)
+	if err != nil {
+		return err
+	}
+	if current != plan {
+		return errors.New("working tree changed after discard preflight; review again")
+	}
+	args := []string{"restore", "--worktree", "--", plan.Path}
+	if plan.Untracked {
+		args = []string{"clean", "-f", "--", plan.Path}
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("discard: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
 var errTooLarge = errors.New("file exceeds comparison size limit")
 
 func Open(ctx context.Context, gitPath, directory string) (*Repository, git.Status, error) {
