@@ -365,6 +365,126 @@ func TestDiscardPreflightAndExecution(t *testing.T) {
 	}
 }
 
+func TestApplyMultipleHunksAndRestoreSelectedHunk(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	command := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	command("init")
+	command("config", "user.name", "Test")
+	command("config", "user.email", "test@example.com")
+	base := "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n"
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte(base), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command("add", "file.txt")
+	command("commit", "-m", "base")
+	changed := "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\n"
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte(changed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := r.Diff(context.Background(), "file.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hunks, err := git.ParseHunks([]byte(patch))
+	if err != nil || len(hunks) != 2 {
+		t.Fatalf("hunks=%d err=%v", len(hunks), err)
+	}
+	selections := make([]HunkSelection, len(hunks))
+	for i, hunk := range hunks {
+		selections[i] = HunkSelection{Index: i, Expected: fmt.Sprintf("%x", sha256.Sum256(hunk.Patch))}
+	}
+	if err := r.ApplyHunks(context.Background(), "file.txt", selections, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if staged := command("diff", "--cached", "--", "file.txt"); !strings.Contains(staged, "+ONE") || !strings.Contains(staged, "+TWELVE") {
+		t.Fatalf("multiple hunks not staged: %s", staged)
+	}
+	if err := command("reset", "-q", "HEAD", "--", "file.txt"); err != "" {
+		t.Fatalf("reset output: %s", err)
+	}
+	planned, err := r.PlanRestoreHunks(context.Background(), "file.txt", selections[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RestoreHunks(context.Background(), planned); err != nil {
+		t.Fatal(err)
+	}
+	working := command("diff", "--", "file.txt")
+	if strings.Contains(working, "+ONE") || !strings.Contains(working, "+TWELVE") {
+		t.Fatalf("selected hunk restore result: %s", working)
+	}
+	workingPatch, err := r.Diff(context.Background(), "file.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := git.ParseHunks([]byte(workingPatch))
+	if err != nil || len(remaining) != 1 {
+		t.Fatalf("remaining hunks=%d err=%v", len(remaining), err)
+	}
+	remainingSelection := []HunkSelection{{Index: 0, Expected: fmt.Sprintf("%x", sha256.Sum256(remaining[0].Patch))}}
+	planned, err = r.PlanRestoreHunks(context.Background(), "file.txt", remainingSelection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("external change\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RestoreHunks(context.Background(), planned); err == nil {
+		t.Fatal("stale restore plan was accepted")
+	}
+}
+
+func TestIgnoredListsOnlyIgnoredUntrackedPaths(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(gitPath, "init", dir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.tmp\ncache/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ignored.tmp", "cache/data.bin", "visible.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := r.Ignored(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || paths[0] != "cache/data.bin" || paths[1] != "ignored.tmp" {
+		t.Fatalf("ignored paths: %+v", paths)
+	}
+}
+
 func TestCompareLargeFileFallsBackToPatch(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {

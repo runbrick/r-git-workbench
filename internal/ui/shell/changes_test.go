@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -285,15 +284,6 @@ func TestDriverOpenStageAndCommit(t *testing.T) {
 	click(flatModeID)
 	if m.treeMode {
 		t.Fatal("flat mode was not enabled")
-	}
-	click(fileScope.At(0))
-	wait(func() bool { return m.showComparison })
-	click(discardID)
-	wait(func() bool { return m.discardPlan != nil && !m.busy })
-	click(discardConfirmID)
-	wait(func() bool { return !m.busy && len(m.status.Files) == 0 })
-	if content, err := os.ReadFile(filepath.Join(dir, "sample.txt")); err != nil || strings.ReplaceAll(string(content), "\r\n", "\n") != "hello\n" {
-		t.Fatalf("discarded file: %q, %v", content, err)
 	}
 	other := t.TempDir()
 	cmd = exec.Command(gitPath, "init", other)

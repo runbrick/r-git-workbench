@@ -29,6 +29,20 @@ type Status struct {
 	Files    []File
 }
 
+func ReadIgnored(ctx context.Context, runner gitexec.Runner, directory string) ([]string, error) {
+	result, err := runner.Run(ctx, gitexec.Command{Dir: directory, Args: []string{"ls-files", "--others", "--ignored", "--exclude-standard", "-z"}, OutputLimit: 8 << 20})
+	if err != nil {
+		return nil, fmt.Errorf("list ignored files: %w: %s", err, result.Stderr)
+	}
+	var paths []string
+	for _, item := range bytes.Split(result.Stdout, []byte{0}) {
+		if len(item) > 0 {
+			paths = append(paths, string(item))
+		}
+	}
+	return paths, nil
+}
+
 func ReadStatus(ctx context.Context, runner gitexec.Runner, directory string) (Status, error) {
 	root, err := runner.Run(ctx, gitexec.Command{Dir: directory, Args: []string{"rev-parse", "--show-toplevel"}})
 	if err != nil {
