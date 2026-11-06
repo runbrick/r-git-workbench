@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"r-git-workbench/internal/git"
 )
 
 func TestStageUnstageCommitAndStatus(t *testing.T) {
@@ -196,6 +199,80 @@ func TestStageUnstageCommitAndStatus(t *testing.T) {
 	}
 	if _, err := r.CommitFile(context.Background(), "invalid", "new.txt"); err == nil {
 		t.Fatal("accepted invalid SHA")
+	}
+}
+
+func TestApplyHunkStagesAndUnstagesOnlySelectedChange(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	command := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	command("init")
+	command("config", "user.name", "Test")
+	command("config", "user.email", "test@example.com")
+	base := "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n"
+	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte(base), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command("add", "sample.txt")
+	command("commit", "-m", "base")
+	changed := "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\n"
+	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte(changed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := r.Diff(context.Background(), "sample.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hunks, err := git.ParseHunks([]byte(patch))
+	if err != nil || len(hunks) != 2 {
+		t.Fatalf("parsed hunks: %d, %v\n%s", len(hunks), err, patch)
+	}
+	hunkHash := fmt.Sprintf("%x", sha256.Sum256(hunks[0].Patch))
+	if err := r.ApplyHunk(context.Background(), "sample.txt", 0, false, hunkHash); err != nil {
+		t.Fatal(err)
+	}
+	if got := command("diff", "--cached", "--", "sample.txt"); !strings.Contains(got, "+ONE") || strings.Contains(got, "+TWELVE") {
+		t.Fatalf("staged first hunk only: %s", got)
+	}
+	if got := command("diff", "--", "sample.txt"); !strings.Contains(got, "+TWELVE") || strings.Contains(got, "+ONE") {
+		t.Fatalf("unstaged second hunk only: %s", got)
+	}
+	stagedPatch, err := r.Diff(context.Background(), "sample.txt", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagedHunks, err := git.ParseHunks([]byte(stagedPatch))
+	if err != nil || len(stagedHunks) != 1 {
+		t.Fatalf("staged hunks: %d, %v", len(stagedHunks), err)
+	}
+	stagedHash := fmt.Sprintf("%x", sha256.Sum256(stagedHunks[0].Patch))
+	if err := r.ApplyHunk(context.Background(), "sample.txt", 0, true, stagedHash); err != nil {
+		t.Fatal(err)
+	}
+	if got := command("diff", "--cached", "--", "sample.txt"); got != "" {
+		t.Fatalf("unstaged selected hunk remains in index: %s", got)
+	}
+	if got := command("diff", "--", "sample.txt"); !strings.Contains(got, "+ONE") || !strings.Contains(got, "+TWELVE") {
+		t.Fatalf("unstaged file lost changes: %s", got)
+	}
+	if err := r.ApplyHunk(context.Background(), "../outside", 0, false, hunkHash); err == nil {
+		t.Fatal("accepted path outside repository")
 	}
 }
 

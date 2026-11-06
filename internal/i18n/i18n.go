@@ -92,9 +92,14 @@ const (
 	RefFilter
 	RemoteTarget
 	UpstreamDefault
+	StageHunk
+	UnstageHunk
+	Amend
+	CommitAndPush
+	CommitMessageHistory
 )
 
-var stringsByLanguage = [...][UpstreamDefault + 1]string{
+var stringsByLanguage = [...][CommitMessageHistory + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -122,6 +127,8 @@ var stringsByLanguage = [...][UpstreamDefault + 1]string{
 		"Branch or ref",
 		"Remote:",
 		"Upstream",
+		"Stage hunk", "Unstage hunk",
+		"Amend", "Commit + Push", "Recent commit messages",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -150,6 +157,8 @@ var stringsByLanguage = [...][UpstreamDefault + 1]string{
 		"分支或引用",
 		"远端：",
 		"上游",
+		"暂存区块", "取消暂存区块",
+		"修改上次提交", "提交 + 推送", "最近提交消息",
 	},
 }
 
@@ -166,7 +175,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > UpstreamDefault {
+	if language > Chinese || key > CommitMessageHistory {
 		return ""
 	}
 	return stringsByLanguage[language][key]

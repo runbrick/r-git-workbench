@@ -682,6 +682,55 @@ func (r *Repository) Stage(ctx context.Context, path string) error {
 	return nil
 }
 
+func (r *Repository) ApplyHunk(ctx context.Context, path string, index int, reverse bool, expected string) error {
+	if err := r.checkPath(path); err != nil {
+		return err
+	}
+	if index < 0 {
+		return errors.New("invalid diff hunk")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	status, err := r.Status(ctx)
+	if err != nil {
+		return err
+	}
+	var file *git.File
+	for i := range status.Files {
+		if status.Files[i].Path == path {
+			file = &status.Files[i]
+			break
+		}
+	}
+	if file == nil || file.Untracked || file.Conflict {
+		return errors.New("hunk operation requires a tracked, non-conflicted file")
+	}
+	patch, err := r.Diff(ctx, path, reverse)
+	if err != nil {
+		return err
+	}
+	hunks, err := git.ParseHunks([]byte(patch))
+	if err != nil {
+		return err
+	}
+	if index >= len(hunks) {
+		return errors.New("diff changed; review the file again")
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(hunks[index].Patch)) != expected {
+		return errors.New("diff hunk changed; review the file again")
+	}
+	args := []string{"apply", "--cached", "--recount"}
+	if reverse {
+		args = append(args, "--reverse")
+	}
+	args = append(args, "-")
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Stdin: bytes.NewReader(hunks[index].Patch), Write: true})
+	if err != nil {
+		return fmt.Errorf("apply diff hunk: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
 func (r *Repository) CreateBranch(ctx context.Context, name string) error {
 	if err := r.checkBranchName(ctx, name); err != nil {
 		return err
@@ -939,14 +988,43 @@ func (r *Repository) Unstage(ctx context.Context, path string) error {
 }
 
 func (r *Repository) Commit(ctx context.Context, message string) error {
+	return r.CommitWithOptions(ctx, message, false)
+}
+
+func (r *Repository) CommitWithOptions(ctx context.Context, message string, amend bool) error {
 	if strings.TrimSpace(message) == "" {
 		return errors.New("commit message is empty")
 	}
 	r.write.Lock()
 	defer r.write.Unlock()
-	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"commit", "-F", "-"}, Stdin: strings.NewReader(message), Write: true})
+	args := []string{"commit", "-F", "-"}
+	if amend {
+		args = append(args, "--amend")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Stdin: strings.NewReader(message), Write: true})
 	if err != nil {
 		return fmt.Errorf("commit: %w: %s", err, result.Stderr)
 	}
 	return nil
+}
+
+func (r *Repository) RecentCommitMessages(ctx context.Context, limit int) ([]string, error) {
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("invalid commit message history limit")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", fmt.Sprintf("-n%d", limit), "--format=%B%x00"}, OutputLimit: 1 << 20})
+	if err != nil {
+		if strings.Contains(string(result.Stderr), "does not have any commits yet") || strings.Contains(string(result.Stderr), "your current branch") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("commit message history: %w: %s", err, result.Stderr)
+	}
+	var messages []string
+	for _, message := range bytes.Split(result.Stdout, []byte{0}) {
+		value := strings.TrimSpace(string(message))
+		if value != "" && (len(messages) == 0 || messages[len(messages)-1] != value) {
+			messages = append(messages, value)
+		}
+	}
+	return messages, nil
 }

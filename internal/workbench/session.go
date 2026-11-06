@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -39,6 +40,7 @@ type Update struct {
 	Skip         int
 	Message      string
 	Files        []string
+	Messages     []string
 	Refs         []git.Ref
 	BranchPlan   repo.BranchDeletePlan
 	CheckoutPlan repo.RemoteCheckoutPlan
@@ -72,6 +74,13 @@ func (session *Session) CommitDetails(ctx context.Context, r *repo.Repository, s
 	go func() {
 		message, files, err := r.CommitDetails(ctx, sha)
 		session.deliver(Update{Repository: r, Kind: "commit-details", Path: sha, Message: message, Files: files, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) RecentMessages(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
+	go func() {
+		messages, err := r.RecentCommitMessages(ctx, 20)
+		session.deliver(Update{Repository: r, Kind: "commit-messages", Messages: messages, Request: request, Err: err}, notify)
 	}()
 }
 
@@ -136,8 +145,17 @@ func (session *Session) Write(ctx context.Context, r *repo.Repository, kind, pat
 			err = r.Stage(ctx, path)
 		case "unstage":
 			err = r.Unstage(ctx, path)
+		case "stage-hunk", "unstage-hunk":
+			var index int
+			var expected string
+			_, err = fmt.Sscanf(message, "%d:%s", &index, &expected)
+			if err == nil {
+				err = r.ApplyHunk(ctx, path, index, kind == "unstage-hunk", expected)
+			}
 		case "commit":
 			err = r.Commit(ctx, message)
+		case "amend":
+			err = r.CommitWithOptions(ctx, message, true)
 		case "create-branch":
 			err = r.CreateBranch(ctx, path)
 		case "switch-branch":

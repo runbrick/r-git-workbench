@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -57,6 +58,10 @@ var (
 	diffVScrollID      = tree.ID(feature, "comparison-vscroll")
 	diffHScrollID      = tree.ID(feature, "comparison-hscroll")
 	diffViewportID     = tree.ID(feature, "comparison-viewport")
+	hunkScope          = tree.Sub(feature, tree.Name("diff-hunks"))
+	amendID            = tree.ID(feature, "amend")
+	commitPushID       = tree.ID(feature, "commit-and-push")
+	messageHistoryID   = tree.ID(feature, "commit-message-history")
 	errorDetailsID     = tree.ID(feature, "error-details")
 	errorScrollID      = tree.ID(feature, "error-scroll")
 	logScope           = tree.Sub(feature, tree.Name("commits"))
@@ -96,6 +101,13 @@ type Model struct {
 	localBranchName      flex.Field
 	branchRenameOld      string
 	message              commitDraft
+	amend                bool
+	commitAndPush        bool
+	messageHistory       []string
+	messageLabels        []string
+	messageHistorySelect flex.SelectState
+	selectedHistory      int
+	messageRequest       uint64
 	logQuery             flex.Field
 	logAuthor            flex.Field
 	logPath              flex.Field
@@ -108,6 +120,7 @@ type Model struct {
 	selected             int
 	selectedStaged       bool
 	diff                 string
+	hunks                []git.Hunk
 	comparison           repo.FileDiff
 	aligned              components.CodeDiffResult
 	codeDiff             components.CodeDiff
@@ -218,11 +231,20 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 	m.logUntil.SetText("")
 	m.logRef.SetText("")
 	m.logFilter = repo.LogFilter{}
+	m.loadMessages()
 	m.resetLog()
 	m.watch(r)
 	m.loadLog()
 	m.loadRefs()
 	m.loadRemotes()
+}
+
+func (m *Model) loadMessages() {
+	if m.repository == nil {
+		return
+	}
+	m.messageRequest++
+	m.mailbox.RecentMessages(m.ctx, m.repository, m.messageRequest, m.invalidator.Invalidate)
 }
 
 func (m *Model) loadRefs() {
@@ -376,6 +398,16 @@ func (m *Model) startRemote(operation string) {
 	m.mailbox.Remote(ctx, m.repository, operation, m.selectedRemote, m.pullPolicy, m.invalidator.Invalidate)
 }
 
+func (m *Model) planPush() {
+	if m.repository == nil {
+		return
+	}
+	m.busy = true
+	m.activeOperation = "push-plan"
+	m.operationError = ""
+	m.mailbox.PlanPush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
+}
+
 // SetInitialGit applies startup detection before the window thread begins.
 func (m *Model) SetInitialGit(installation git.Installation, err error) {
 	m.Git, m.DetectionErr, m.Checking = installation, err, false
@@ -484,6 +516,9 @@ func (m *Model) Config() app.Config {
 				if update.Kind == "remotes" && update.Request != m.remotesRequest {
 					continue
 				}
+				if update.Kind == "commit-messages" && update.Request != m.messageRequest {
+					continue
+				}
 				if update.Kind == "refresh" && m.activeOperation != "refresh" {
 					continue
 				}
@@ -519,6 +554,7 @@ func (m *Model) Config() app.Config {
 					if update.Err == nil && m.selected >= 0 && m.selected < len(m.status.Files) && m.status.Files[m.selected].Path == update.Path && m.selectedStaged == update.Staged {
 						m.diff = update.Diff
 						m.comparison, m.aligned = update.Comparison, update.Aligned
+						m.hunks, _ = git.ParseHunks([]byte(update.Diff))
 						m.showComparison = !update.Comparison.Binary
 					}
 				case "watch-error":
@@ -540,6 +576,14 @@ func (m *Model) Config() app.Config {
 				case "commit-details":
 					if update.Err == nil && update.Request == m.detailsRequest && update.Path == m.selectedCommit {
 						m.commitMessage, m.commitFiles = update.Message, update.Files
+					}
+				case "commit-messages":
+					if update.Err == nil {
+						m.messageHistory = update.Messages
+						m.messageLabels = make([]string, len(update.Messages))
+						for i, value := range update.Messages {
+							m.messageLabels[i] = strings.SplitN(strings.ReplaceAll(value, "\r", ""), "\n", 2)[0]
+						}
 					}
 				case "commit-file":
 					if update.Err == nil {
@@ -654,7 +698,7 @@ func (m *Model) Config() app.Config {
 						m.confirmForcePush = false
 					}
 				default:
-					if update.Kind == "stage" || update.Kind == "unstage" || update.Kind == "commit" || update.Kind == "create-branch" || update.Kind == "switch-branch" {
+					if update.Kind == "stage" || update.Kind == "unstage" || update.Kind == "stage-hunk" || update.Kind == "unstage-hunk" || update.Kind == "commit" || update.Kind == "amend" || update.Kind == "create-branch" || update.Kind == "switch-branch" {
 						m.watchPending = false
 					}
 					if update.Status.Root != "" {
@@ -667,10 +711,18 @@ func (m *Model) Config() app.Config {
 							m.request++
 						}
 					}
-					if update.Kind == "commit" && update.Err == nil {
+					if (update.Kind == "commit" || update.Kind == "amend") && update.Err == nil {
 						m.message.SetText("")
+						m.amend = false
 						m.resetLog()
 						m.loadRefs()
+						m.loadMessages()
+						if m.commitAndPush {
+							m.commitAndPush = false
+							m.planPush()
+						}
+					} else if update.Kind == "commit" || update.Kind == "amend" {
+						m.commitAndPush = false
 					}
 				}
 				if update.Kind != "diff" && update.Kind != "changed" && update.Kind != "watch-error" && update.Kind != "log" && update.Kind != "commit-details" && update.Kind != "commit-file" && update.Kind != "refs" && update.Kind != "remotes" && update.Kind != "remote-progress" {
@@ -799,10 +851,7 @@ func (m *Model) paintTop(f *flex.Frame) {
 				}
 				if f.Button(pushID, text(i18n.Push)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.Active = keymap.ShowBranches
-					m.busy = true
-					m.activeOperation = "push-plan"
-					m.operationError = ""
-					m.mailbox.PlanPush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
+					m.planPush()
 				}
 				if f.Button(tree.ID(feature, "force-push"), text(i18n.ForcePushWithLease)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.Active = keymap.ShowBranches
@@ -1162,11 +1211,34 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 		})
 		f.Divider()
 		f.Column().FillWidth().Height(180).Pad(8).Gap(6).Children(func() {
-			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(123)
-			f.Spacer()
-			if f.Button(commitID, text(i18n.CommitButton)).Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
-				m.write("commit", "", m.message.Text())
+			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(88)
+			if len(m.messageHistory) > 0 {
+				if index, ok := f.Select(tree.Sub(feature, tree.Name("commit-message-history-options")), &m.messageHistorySelect, m.messageLabels, m.selectedHistory).Placeholder(text(i18n.CommitMessageHistory)).Small().Picked(); ok {
+					m.selectedHistory = index
+					m.message.SetText(m.messageHistory[index])
+				}
 			}
+			f.Spacer()
+			f.Row().FillWidth().Gap(4).Children(func() {
+				if f.Checkbox(amendID, m.amend).Label(text(i18n.Amend)).Clicked() {
+					m.amend = !m.amend
+				}
+				if f.Button(commitID, text(i18n.CommitButton)).Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
+					kind := "commit"
+					if m.amend {
+						kind = "amend"
+					}
+					m.write(kind, "", m.message.Text())
+				}
+				if f.Button(commitPushID, text(i18n.CommitAndPush)).Ghost().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.message.Text()) == "").Clicked() {
+					m.commitAndPush = true
+					kind := "commit"
+					if m.amend {
+						kind = "amend"
+					}
+					m.write(kind, "", m.message.Text())
+				}
+			})
 		})
 	})
 }
@@ -1215,6 +1287,24 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 				}
 			}
 		})
+		if len(m.hunks) > 0 && m.selected >= 0 && m.selected < len(m.status.Files) {
+			f.Row().FillWidth().Gap(4).Children(func() {
+				for index := range m.hunks {
+					label := text(i18n.StageHunk)
+					if m.selectedStaged {
+						label = text(i18n.UnstageHunk)
+					}
+					if f.Button(hunkScope.At(index), fmt.Sprintf("%s %d", label, index+1)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+						kind := "stage-hunk"
+						if m.selectedStaged {
+							kind = "unstage-hunk"
+						}
+						hash := fmt.Sprintf("%x", sha256.Sum256(m.hunks[index].Patch))
+						m.write(kind, m.status.Files[m.selected].Path, fmt.Sprintf("%d:%s", index, hash))
+					}
+				}
+			})
+		}
 		if m.showComparison {
 			m.diffSlot = f.Slot().Grow(1)
 		} else {
