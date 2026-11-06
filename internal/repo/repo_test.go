@@ -551,6 +551,370 @@ func TestSwitchBranchPreservesDirtyWorktreeOnRefusal(t *testing.T) {
 	}
 }
 
+func TestBranchManagementAndDeletePreflight(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init")
+	run("config", "user.name", "Branch Manager")
+	run("config", "user.email", "branch-manager@example.com")
+	run("commit", "--allow-empty", "-m", "initial")
+	run("branch", "feature/delete-me")
+	run("config", "remote.origin.url", "../unused.git")
+	run("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	run("update-ref", "refs/remotes/origin/feature/delete-me", run("rev-parse", "HEAD"))
+	run("branch", "--set-upstream-to=origin/feature/delete-me", "feature/delete-me")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RenameBranch(context.Background(), "feature/delete-me", "feature/renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetUpstream(context.Background(), "feature/renamed", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("for-each-ref", "--format=%(upstream)", "refs/heads/feature/renamed"); got != "" {
+		t.Fatalf("upstream was not removed: %q", got)
+	}
+	if err := r.SetUpstream(context.Background(), "feature/renamed", "refs/remotes/origin/feature/delete-me"); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("for-each-ref", "--format=%(upstream)", "refs/heads/feature/renamed"); got != "refs/remotes/origin/feature/delete-me" {
+		t.Fatalf("wrong upstream: %q", got)
+	}
+	if err := r.CheckoutRemoteBranch(context.Background(), "refs/remotes/origin/feature/delete-me", "feature/tracking"); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("for-each-ref", "--format=%(upstream)", "refs/heads/feature/tracking"); got != "refs/remotes/origin/feature/delete-me" {
+		t.Fatalf("tracking branch upstream: %q", got)
+	}
+	plan, err := r.PlanDeleteBranch(context.Background(), "feature/renamed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target != run("rev-parse", "refs/heads/feature/renamed") {
+		t.Fatalf("delete preview target %s does not match branch", plan.Target)
+	}
+	if err := r.DeleteBranch(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.PlanDeleteBranch(context.Background(), "feature/tracking"); err == nil {
+		t.Fatal("current branch was offered for deletion")
+	}
+	if _, err := r.PlanDeleteBranch(context.Background(), "missing"); err == nil {
+		t.Fatal("missing branch was offered for deletion")
+	}
+}
+
+func TestDeleteBranchRejectsStalePreflight(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init")
+	run("config", "user.name", "Stale Plan")
+	run("config", "user.email", "stale@example.com")
+	run("commit", "--allow-empty", "-m", "initial")
+	run("branch", "feature/stale")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanDeleteBranch(context.Background(), "feature/stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "--allow-empty", "-m", "advance head")
+	if err := r.DeleteBranch(context.Background(), plan); err == nil {
+		t.Fatal("stale delete preflight was accepted")
+	}
+	if got := run("show-ref", "--verify", "refs/heads/feature/stale"); got == "" {
+		t.Fatal("branch was deleted after stale preflight")
+	}
+}
+
+func TestRemoteCheckoutPlansCancelStashAndForce(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init")
+	run("config", "user.name", "Checkout Test")
+	run("config", "user.email", "checkout@example.com")
+	file := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "tracked.txt")
+	run("commit", "-m", "base")
+	head := run("rev-parse", "HEAD")
+	run("branch", "remote-target")
+	run("config", "remote.origin.url", "../unused.git")
+	run("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	run("update-ref", "refs/remotes/origin/remote-target", head)
+	if err := os.WriteFile(file, []byte("uncommitted\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("untracked\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanCheckoutRemoteBranch(context.Background(), "refs/remotes/origin/remote-target", "local-stash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.DirtyFiles) != 2 || plan.DirtyFiles[0] != "new.txt" || plan.DirtyFiles[1] != "tracked.txt" {
+		t.Fatalf("dirty files not listed in preview: %+v", plan.DirtyFiles)
+	}
+	if err := r.ExecuteCheckoutRemoteBranch(context.Background(), plan, CheckoutSafe); err == nil {
+		t.Fatal("safe checkout accepted a dirty worktree; cancel must leave it untouched")
+	}
+	if got, _ := os.ReadFile(file); string(got) != "uncommitted\n" {
+		t.Fatalf("cancel changed tracked file: %q", got)
+	}
+	if err := r.ExecuteCheckoutRemoteBranch(context.Background(), plan, CheckoutStash); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("branch", "--show-current"); got != "local-stash" {
+		t.Fatalf("stash checkout branch: %s", got)
+	}
+	if got := run("stash", "list"); !strings.Contains(got, "before remote branch checkout") {
+		t.Fatalf("changes were not stashed: %q", got)
+	}
+	if got, err := os.ReadFile(file); err != nil || strings.ReplaceAll(string(got), "\r\n", "\n") != "base\n" {
+		t.Fatalf("stashed tracked worktree not clean: %q, %v", got, err)
+	}
+	run("switch", "-")
+	if err := os.WriteFile(file, []byte("force me\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	forcePlan, err := r.PlanCheckoutRemoteBranch(context.Background(), "refs/remotes/origin/remote-target", "local-force")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "--allow-empty", "-m", "advance head after preview")
+	if err := r.ExecuteCheckoutRemoteBranch(context.Background(), forcePlan, CheckoutForce); err == nil {
+		t.Fatal("force checkout accepted a stale preflight")
+	}
+	if got, _ := os.ReadFile(file); string(got) != "force me\n" {
+		t.Fatalf("stale force checkout changed tracked file: %q", got)
+	}
+	forcePlan, err = r.PlanCheckoutRemoteBranch(context.Background(), "refs/remotes/origin/remote-target", "local-force")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteCheckoutRemoteBranch(context.Background(), forcePlan, CheckoutForce); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("branch", "--show-current"); got != "local-force" {
+		t.Fatalf("force checkout branch: %s", got)
+	}
+	if got, _ := os.ReadFile(file); strings.ReplaceAll(string(got), "\r\n", "\n") != "base\n" {
+		t.Fatalf("force checkout did not replace tracked file: %q", got)
+	}
+}
+
+func TestRemoteFetchPullPushAgainstBareRepository(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	root := t.TempDir()
+	remoteDir := filepath.Join(root, "remote.git")
+	localDir := filepath.Join(root, "local")
+	otherDir := filepath.Join(root, "other")
+	global := filepath.Join(root, "global")
+	system := filepath.Join(root, "system")
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+system)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run(root, "init", "--bare", remoteDir)
+	run(remoteDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	if err := os.Mkdir(localDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "init")
+	run(localDir, "config", "user.name", "Remote Test")
+	run(localDir, "config", "user.email", "remote@example.com")
+	if err := os.WriteFile(filepath.Join(localDir, "base.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "add", "base.txt")
+	run(localDir, "commit", "-m", "base")
+	run(localDir, "branch", "-M", "main")
+	run(localDir, "remote", "add", "origin", remoteDir)
+	run(localDir, "push", "-u", "origin", "main")
+	r, _, err := Open(context.Background(), gitPath, localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress []string
+	if err := r.Remote(context.Background(), "fetch", func(line string) { progress = append(progress, line) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(otherDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	run(otherDir, "clone", remoteDir, ".")
+	run(otherDir, "config", "user.name", "Remote Writer")
+	run(otherDir, "config", "user.email", "writer@example.com")
+	if err := os.WriteFile(filepath.Join(otherDir, "remote.txt"), []byte("from remote\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(otherDir, "add", "remote.txt")
+	run(otherDir, "commit", "-m", "remote update")
+	run(otherDir, "push", "origin", "main")
+	if err := r.Remote(context.Background(), "fetch", func(line string) { progress = append(progress, line) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Remote(context.Background(), "pull", func(line string) { progress = append(progress, line) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "remote.txt")); err != nil {
+		t.Fatalf("pull did not update worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "local.txt"), []byte("from local\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "add", "local.txt")
+	run(localDir, "commit", "-m", "local update")
+	if err := r.Remote(context.Background(), "push", func(line string) { progress = append(progress, line) }); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(remoteDir, "show", "main:local.txt"); got != "from local" {
+		t.Fatalf("push did not update remote: %q", got)
+	}
+	if err := r.Remote(context.Background(), "unknown", nil); err == nil {
+		t.Fatal("accepted unknown remote operation")
+	}
+}
+
+func TestForcePushUsesLeaseAndRejectsStalePlan(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	root := t.TempDir()
+	remoteDir := filepath.Join(root, "remote.git")
+	localDir := filepath.Join(root, "local")
+	otherDir := filepath.Join(root, "other")
+	global, system := filepath.Join(root, "global"), filepath.Join(root, "system")
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+system)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run(root, "init", "--bare", remoteDir)
+	run(remoteDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	if err := os.Mkdir(localDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "init")
+	run(localDir, "config", "user.name", "Lease Test")
+	run(localDir, "config", "user.email", "lease@example.com")
+	if err := os.WriteFile(filepath.Join(localDir, "local.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "add", "local.txt")
+	run(localDir, "commit", "-m", "base")
+	run(localDir, "branch", "-M", "main")
+	run(localDir, "remote", "add", "origin", remoteDir)
+	run(localDir, "push", "-u", "origin", "main")
+	if err := os.Mkdir(otherDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	run(otherDir, "clone", remoteDir, ".")
+	run(otherDir, "config", "user.name", "Other Writer")
+	run(otherDir, "config", "user.email", "other@example.com")
+	if err := os.WriteFile(filepath.Join(localDir, "local.txt"), []byte("local replacement\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(localDir, "commit", "-am", "local rewrite")
+	r, _, err := Open(context.Background(), gitPath, localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanForcePush(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "other.txt"), []byte("remote update\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(otherDir, "add", "other.txt")
+	run(otherDir, "commit", "-m", "remote update")
+	run(otherDir, "push", "origin", "main")
+	if err := r.ExecuteForcePush(context.Background(), plan, nil); err == nil {
+		t.Fatal("stale force-push lease succeeded")
+	}
+	run(localDir, "fetch", "origin")
+	plan, err = r.PlanForcePush(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteForcePush(context.Background(), plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(remoteDir, "show", "main:local.txt"); got != "local replacement" {
+		t.Fatalf("force push did not update remote: %q", got)
+	}
+}
+
 func TestLogFiltersPathAndAuthor(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {

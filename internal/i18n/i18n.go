@@ -65,9 +65,24 @@ const (
 	NewBranch
 	BranchName
 	SwitchBranch
+	RenameBranch
+	DeleteBranch
+	SetUpstream
+	UnsetUpstream
+	CheckoutRemoteBranch
+	LocalBranchName
+	ConfirmDeleteBranch
+	Cancel
+	CheckoutChangesWarning
+	StashAndCheckout
+	ForceCheckout
+	ConfirmForceCheckout
+	ForcePushWithLease
+	ConfirmForcePush
+	PushTargets
 )
 
-var stringsByLanguage = [...][SwitchBranch + 1]string{
+var stringsByLanguage = [...][PushTargets + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -83,6 +98,10 @@ var stringsByLanguage = [...][SwitchBranch + 1]string{
 		"Author", "Path",
 		"Local branches", "Remote branches",
 		"Create branch", "Branch name", "Switch",
+		"Rename", "Delete", "Set upstream", "Unset upstream", "Checkout as local", "Local branch name",
+		"Delete this branch?", "Cancel",
+		"Uncommitted files may be affected:", "Stash and checkout", "Force checkout", "Confirm force checkout",
+		"Force push with lease", "Confirm force push", "Push targets (local -> expected remote)",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -99,6 +118,10 @@ var stringsByLanguage = [...][SwitchBranch + 1]string{
 		"作者", "路径",
 		"本地分支", "远程分支",
 		"新建分支", "分支名称", "切换",
+		"重命名", "删除", "设置上游", "取消上游", "检出为本地分支", "本地分支名",
+		"确认删除此分支？", "取消",
+		"以下未提交文件可能受影响：", "暂存改动并检出", "强制检出", "确认强制检出",
+		"带保护的强制推送", "确认强制推送", "推送目标（本地 -> 预期远端）",
 	},
 }
 
@@ -115,7 +138,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > SwitchBranch {
+	if language > Chinese || key > PushTargets {
 		return ""
 	}
 	return stringsByLanguage[language][key]

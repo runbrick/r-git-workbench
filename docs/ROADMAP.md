@@ -54,7 +54,11 @@ Log 已接入按需加载的只读列表：首次进入加载 100 条，滚动�
 
 ## M3 进度
 
-Branches 页面已通过 `for-each-ref` 展示本地、远程分支及本地分支的 upstream；可用完整引用筛选 Log、新建本地分支和切换已有本地分支。切换使用普通 `git switch`，Git 检测到会覆盖工作区修改时拒绝操作，界面保留原始错误；成功后更新当前分支、状态、引用和日志。真实仓库测试覆盖合法/非法/重复分支名、正常切换及脏工作区拒绝，Driver 覆盖创建、切换和窄窗口布局。重命名、删除、upstream 管理、远程分支 checkout 及覆盖时的 Cancel/Stash/Force 流程未实现，M3 未完成。
+Branches 页面通过 `for-each-ref` 展示本地、远程分支及 upstream；支持新建、切换、重命名本地分支，设置/取消 upstream，以及从远程分支创建跟踪分支。删除本地分支采用预检、界面确认和执行时状态校验；Git 普通 `branch -d` 会拒绝未合并分支。远程 checkout 会预检并显示脏文件，提供 Cancel、先 Stash（包括未跟踪文件）再检出，以及二次确认后的 Force Checkout。计划绑定 HEAD、远程目标 SHA 和工作区状态，执行前重新校验。真实仓库测试覆盖正常流程、过期计划拒绝、取消保持原状、Stash 保留和 Force 覆盖。M3 功能实现完成，仍需按里程碑要求完成三平台验收。
+
+## M4 进度
+
+顶栏已接入 Fetch、Pull（merge 策略）和 Push，均在后台执行并在完成后刷新状态、引用与 Log；Git 的 CR/LF 进度消息逐行投递至窗口，远端操作可取消。Push/Pull 使用当前分支配置的 upstream，无 upstream、网络、认证和 hook 错误保留原始 Git 输出。Force push with lease 使用预检计划、展示目标远端/分支和本地 SHA/预期远端 SHA、二次确认，并在执行前重新校验后运行显式 `--force-with-lease`。真实 bare 仓库测试覆盖普通同步及过期 lease 拒绝。多远端选择、ahead/behind 与提交预览、Pull 策略设置及错误分类 UI 尚未实现，M4 未完成。首发继续依赖系统 credential helper/SSH agent，不提供内置 askpass。
 
 ## Rebased 对照（2026-11-06）
 

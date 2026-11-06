@@ -1,12 +1,30 @@
 package gitexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestProgressOutputSplitsCRLinesAndFlushesRemainder(t *testing.T) {
+	var captured limitedOutput
+	captured.limit = 1024
+	var lines []string
+	progress := progressOutput{output: &captured, notify: func(line string) { lines = append(lines, line) }}
+	if _, err := progress.Write([]byte("Counting objects: 10%\rCounting objects: 100%\nWriting objects: 50%")); err != nil {
+		t.Fatal(err)
+	}
+	progress.flush()
+	if got := strings.Join(lines, "|"); got != "Counting objects: 10%|Counting objects: 100%|Writing objects: 50%" {
+		t.Fatalf("progress lines = %q", got)
+	}
+	if !bytes.Equal(captured.buffer.Bytes(), []byte("Counting objects: 10%\rCounting objects: 100%\nWriting objects: 50%")) {
+		t.Fatalf("stderr capture changed: %q", captured.buffer.Bytes())
+	}
+}
 
 func TestRunnerVersionAndEnvironment(t *testing.T) {
 	path, err := exec.LookPath("git")

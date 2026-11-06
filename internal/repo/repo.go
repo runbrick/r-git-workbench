@@ -3,10 +3,12 @@ package repo
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,6 +220,87 @@ func (r *Repository) Status(ctx context.Context) (git.Status, error) {
 	return git.ReadStatus(ctx, r.runner, r.Root)
 }
 
+func (r *Repository) Remote(ctx context.Context, operation string, progress func(string)) error {
+	var args []string
+	switch operation {
+	case "fetch":
+		args = []string{"fetch", "--progress", "--prune"}
+	case "pull":
+		args = []string{"pull", "--progress", "--no-rebase"}
+	case "push":
+		args = []string{"push", "--progress"}
+	default:
+		return fmt.Errorf("unknown remote operation %q", operation)
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true, OnProgress: progress})
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", operation, err, result.Stderr)
+	}
+	return nil
+}
+
+type ForcePushPlan struct {
+	Remote string
+	Branch string
+	Local  string
+	Lease  string
+}
+
+func (r *Repository) PlanForcePush(ctx context.Context) (ForcePushPlan, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return ForcePushPlan{}, err
+	}
+	if status.Branch == "" || status.Branch == "(detached)" {
+		return ForcePushPlan{}, errors.New("force push requires a local branch")
+	}
+	ref, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"for-each-ref", "--format=%(upstream)", "refs/heads/" + status.Branch}})
+	if err != nil {
+		return ForcePushPlan{}, fmt.Errorf("read push upstream: %w: %s", err, ref.Stderr)
+	}
+	upstream := strings.TrimSpace(string(ref.Stdout))
+	if !strings.HasPrefix(upstream, "refs/remotes/") {
+		return ForcePushPlan{}, errors.New("current branch has no upstream")
+	}
+	remoteBranch := strings.TrimPrefix(upstream, "refs/remotes/")
+	remote, branch, ok := strings.Cut(remoteBranch, "/")
+	if !ok || remote == "" || branch == "" {
+		return ForcePushPlan{}, errors.New("cannot determine push remote and branch")
+	}
+	local, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
+	if err != nil {
+		return ForcePushPlan{}, fmt.Errorf("resolve local push target: %w: %s", err, local.Stderr)
+	}
+	lease, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", upstream}})
+	if err != nil {
+		return ForcePushPlan{}, fmt.Errorf("resolve remote push target: %w: %s", err, lease.Stderr)
+	}
+	return ForcePushPlan{Remote: remote, Branch: branch, Local: strings.TrimSpace(string(local.Stdout)), Lease: strings.TrimSpace(string(lease.Stdout))}, nil
+}
+
+func (r *Repository) ExecuteForcePush(ctx context.Context, plan ForcePushPlan, progress func(string)) error {
+	if plan.Remote == "" || plan.Branch == "" || plan.Local == "" || plan.Lease == "" {
+		return errors.New("invalid force push plan")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanForcePush(ctx)
+	if err != nil {
+		return err
+	}
+	if current != plan {
+		return errors.New("push targets changed after preflight; review a new plan")
+	}
+	args := []string{"push", "--progress", "--force-with-lease=refs/heads/" + plan.Branch + ":" + plan.Lease, plan.Remote, "HEAD:refs/heads/" + plan.Branch}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true, OnProgress: progress})
+	if err != nil {
+		return fmt.Errorf("force push: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
 // Watch waits for OS filesystem events. A timer exists only after a change and
 // merges bursts from Git and the working tree into a single refresh request.
 func (r *Repository) Watch(ctx context.Context, notify func(), report func(error)) error {
@@ -427,6 +510,201 @@ func (r *Repository) CreateBranch(ctx context.Context, name string) error {
 	return nil
 }
 
+func (r *Repository) RenameBranch(ctx context.Context, oldName, newName string) error {
+	if err := r.checkBranchName(ctx, oldName); err != nil {
+		return err
+	}
+	if err := r.checkBranchName(ctx, newName); err != nil {
+		return err
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"branch", "-m", oldName, newName}, Write: true})
+	if err != nil {
+		return fmt.Errorf("rename branch: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+type BranchDeletePlan struct {
+	Name       string
+	Head       string
+	Target     string
+	StatusHash string
+}
+
+func (r *Repository) PlanDeleteBranch(ctx context.Context, name string) (BranchDeletePlan, error) {
+	if err := r.checkBranchName(ctx, name); err != nil {
+		return BranchDeletePlan{}, err
+	}
+	if name == "" {
+		return BranchDeletePlan{}, errors.New("invalid branch name")
+	}
+	head, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
+	if err != nil {
+		return BranchDeletePlan{}, fmt.Errorf("branch delete preflight head: %w: %s", err, head.Stderr)
+	}
+	target, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "refs/heads/" + name}})
+	if err != nil {
+		return BranchDeletePlan{}, fmt.Errorf("branch not found: %s: %w: %s", name, err, target.Stderr)
+	}
+	status, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"}, OutputLimit: 16 << 20})
+	if err != nil {
+		return BranchDeletePlan{}, fmt.Errorf("branch delete preflight status: %w: %s", err, status.Stderr)
+	}
+	for _, record := range bytes.Split(status.Stdout, []byte{0}) {
+		if strings.Trim(string(record), "\r\n") == "# branch.head "+name {
+			return BranchDeletePlan{}, errors.New("cannot delete the current branch")
+		}
+	}
+	return BranchDeletePlan{Name: name, Head: strings.TrimSpace(string(head.Stdout)), Target: strings.TrimSpace(string(target.Stdout)), StatusHash: fmt.Sprintf("%x", sha256.Sum256(status.Stdout))}, nil
+}
+
+func (r *Repository) DeleteBranch(ctx context.Context, plan BranchDeletePlan) error {
+	if plan.Name == "" || plan.Head == "" || plan.Target == "" || plan.StatusHash == "" {
+		return errors.New("invalid branch delete plan")
+	}
+	if err := r.checkBranchName(ctx, plan.Name); err != nil {
+		return err
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanDeleteBranch(ctx, plan.Name)
+	if err != nil {
+		return err
+	}
+	if current != plan {
+		return errors.New("repository changed after branch delete preflight; review a new plan")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"branch", "-d", "--", plan.Name}, Write: true})
+	if err != nil {
+		return fmt.Errorf("delete branch: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) SetUpstream(ctx context.Context, name, upstream string) error {
+	if err := r.checkBranchName(ctx, name); err != nil {
+		return err
+	}
+	args := []string{"branch", "--set-upstream-to=" + upstream, name}
+	if upstream == "" {
+		args = []string{"branch", "--unset-upstream", name}
+	} else if !strings.HasPrefix(upstream, "refs/remotes/") || strings.ContainsAny(upstream, "\x00\r\n") {
+		return errors.New("invalid upstream reference")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("set branch upstream: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) CheckoutRemoteBranch(ctx context.Context, remoteName, localName string) error {
+	plan, err := r.PlanCheckoutRemoteBranch(ctx, remoteName, localName)
+	if err != nil {
+		return err
+	}
+	return r.ExecuteCheckoutRemoteBranch(ctx, plan, CheckoutSafe)
+}
+
+type CheckoutMode uint8
+
+const (
+	CheckoutSafe CheckoutMode = iota
+	CheckoutStash
+	CheckoutForce
+)
+
+type RemoteCheckoutPlan struct {
+	Remote     string
+	Local      string
+	Head       string
+	Target     string
+	StatusHash string
+	DirtyFiles []string
+}
+
+func (r *Repository) PlanCheckoutRemoteBranch(ctx context.Context, remoteName, localName string) (RemoteCheckoutPlan, error) {
+	if err := r.checkBranchName(ctx, localName); err != nil {
+		return RemoteCheckoutPlan{}, err
+	}
+	if remoteName == "" || strings.ContainsAny(remoteName, "\x00\r\n") {
+		return RemoteCheckoutPlan{}, errors.New("invalid remote branch")
+	}
+	if !strings.HasPrefix(remoteName, "refs/remotes/") {
+		return RemoteCheckoutPlan{}, errors.New("invalid remote branch")
+	}
+	remote, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show-ref", "--verify", "--quiet", remoteName}})
+	if err != nil {
+		return RemoteCheckoutPlan{}, fmt.Errorf("remote branch not found: %s: %w: %s", remoteName, err, remote.Stderr)
+	}
+	target, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", remoteName}})
+	if err != nil {
+		return RemoteCheckoutPlan{}, fmt.Errorf("resolve remote branch: %w: %s", err, target.Stderr)
+	}
+	if _, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/" + localName}}); err == nil {
+		return RemoteCheckoutPlan{}, fmt.Errorf("local branch already exists: %s", localName)
+	}
+	head, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
+	if err != nil {
+		return RemoteCheckoutPlan{}, fmt.Errorf("checkout preflight head: %w: %s", err, head.Stderr)
+	}
+	status, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"}, OutputLimit: 16 << 20})
+	if err != nil {
+		return RemoteCheckoutPlan{}, fmt.Errorf("checkout preflight status: %w: %s", err, status.Stderr)
+	}
+	parsed, err := git.ParseStatus(status.Stdout)
+	if err != nil {
+		return RemoteCheckoutPlan{}, err
+	}
+	dirty := make([]string, 0, len(parsed.Files))
+	for _, file := range parsed.Files {
+		dirty = append(dirty, file.Path)
+	}
+	slices.Sort(dirty)
+	return RemoteCheckoutPlan{
+		Remote: remoteName, Local: localName, Head: strings.TrimSpace(string(head.Stdout)),
+		Target: strings.TrimSpace(string(target.Stdout)), StatusHash: fmt.Sprintf("%x", sha256.Sum256(status.Stdout)),
+		DirtyFiles: dirty,
+	}, nil
+}
+
+func (r *Repository) ExecuteCheckoutRemoteBranch(ctx context.Context, plan RemoteCheckoutPlan, mode CheckoutMode) error {
+	if plan.Remote == "" || plan.Local == "" || plan.Head == "" || plan.Target == "" || plan.StatusHash == "" || mode > CheckoutForce {
+		return errors.New("invalid remote checkout plan")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanCheckoutRemoteBranch(ctx, plan.Remote, plan.Local)
+	if err != nil {
+		return err
+	}
+	if current.Remote != plan.Remote || current.Local != plan.Local || current.Head != plan.Head || current.Target != plan.Target || current.StatusHash != plan.StatusHash {
+		return errors.New("repository changed after checkout preflight; review a new plan")
+	}
+	if len(plan.DirtyFiles) > 0 && mode == CheckoutSafe {
+		return errors.New("working tree has changes; choose stash, force checkout, or cancel")
+	}
+	if mode == CheckoutStash {
+		result, stashErr := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"stash", "push", "--include-untracked", "-m", "r-git-workbench: before remote branch checkout"}, Write: true})
+		if stashErr != nil {
+			return fmt.Errorf("stash before checkout: %w: %s", stashErr, result.Stderr)
+		}
+	}
+	args := []string{"switch", "--track", "-c", plan.Local, plan.Remote}
+	if mode == CheckoutForce {
+		args = []string{"switch", "--discard-changes", "--track", "-c", plan.Local, plan.Remote}
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("checkout remote branch: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
 func (r *Repository) checkBranchName(ctx context.Context, name string) error {
 	if name == "" || strings.ContainsAny(name, "\x00\r\n") {
 		return errors.New("invalid branch name")
@@ -465,7 +743,7 @@ func (r *Repository) Unstage(ctx context.Context, path string) error {
 	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"restore", "--staged", "--", path}, Write: true})
 	if err != nil {
 		// An unborn branch has no HEAD to restore from.
-		if strings.Contains(string(result.Stderr), "could not resolve HEAD") || strings.Contains(string(result.Stderr), "invalid reference: HEAD") {
+		if strings.Contains(string(result.Stderr), "could not resolve") && strings.Contains(string(result.Stderr), "HEAD") || strings.Contains(string(result.Stderr), "invalid reference: HEAD") {
 			result, err = r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rm", "--cached", "--", path}, Write: true})
 		}
 	}

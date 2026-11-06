@@ -21,6 +21,7 @@ type Command struct {
 	Timeout time.Duration
 	// OutputLimit bounds captured stdout. Zero uses the default 64 MiB limit.
 	OutputLimit int
+	OnProgress  func(string)
 }
 
 type Result struct {
@@ -86,7 +87,8 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	stdout, stderr := limitedOutput{limit: limit}, limitedOutput{limit: stderrLimit}
 	process.Stdout = &stdout
-	process.Stderr = &stderr
+	progress := &progressOutput{output: &stderr, notify: command.OnProgress}
+	process.Stderr = progress
 	err := process.Start()
 	if err == nil {
 		done := make(chan struct{})
@@ -112,6 +114,7 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 		close(done)
 		<-stopped
 	}
+	progress.flush()
 	result := Result{Stdout: stdout.buffer.Bytes(), Stderr: stderr.buffer.Bytes()}
 	if err != nil {
 		result.ExitCode = -1
@@ -128,6 +131,39 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 		return result, fmt.Errorf("git %s output exceeded capture limit (stdout %d, stderr %d bytes)", command.Args[0], limit, stderrLimit)
 	}
 	return result, nil
+}
+
+type progressOutput struct {
+	output *limitedOutput
+	notify func(string)
+	line   []byte
+}
+
+func (output *progressOutput) Write(data []byte) (int, error) {
+	n, err := output.output.Write(data)
+	if output.notify == nil {
+		return n, err
+	}
+	for _, char := range data {
+		if char == '\r' || char == '\n' {
+			if len(output.line) > 0 {
+				output.notify(string(output.line))
+				output.line = output.line[:0]
+			}
+			continue
+		}
+		if len(output.line) < 4096 {
+			output.line = append(output.line, char)
+		}
+	}
+	return n, err
+}
+
+func (output *progressOutput) flush() {
+	if len(output.line) > 0 && output.notify != nil {
+		output.notify(string(output.line))
+		output.line = nil
+	}
 }
 
 func overrideEnv(existing []string, write bool) []string {
