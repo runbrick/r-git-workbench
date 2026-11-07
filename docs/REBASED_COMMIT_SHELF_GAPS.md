@@ -4,12 +4,12 @@
 
 ## 1. Amend 功能核实
 
-**结论：后端完整支持，UI 入口完全不存在（确认的零引用，不是"可能缺失"）。**
+**历史盘点结论已过期：Amend 控件现已接入 Commit 面板。**
 
 - 后端：`internal/repo/repo.go:1166-1185`。`Commit(ctx, message)` 是 `CommitWithOptions(ctx, message, false)` 的薄封装；`CommitWithOptions` 在 `amend == true` 时正确拼接 `git commit -F - --amend`（`repo.go:1177-1179`）。后端逻辑正确、完整。
 - UI 状态字段：`m.amend bool`（`shell.go:114`），在提交点击处理中被正确读取——`shell.go:1296-1301`（Commit 按钮）和 `1303-1309`（Commit and Push 按钮）都会判断 `if m.amend { kind = "amend" }`，然后调用 `m.write(kind, "", m.message.Text())`。提交成功后 `m.amend` 会被重置为 `false`（`shell.go:769`）。这条链路本身是对的、闭环的。
-- UI 入口：全局搜索 `amend|Amend`，命中两处——字段声明（`shell.go:114`）和一个孤立的 `tree.ID` 声明 `amendID = tree.ID(feature, "amend")`（`shell.go:64`）。`amendID` **在声明之后再未被引用**（不在任何 `f.Checkbox`、`f.Button` 或其他绘制调用里出现）。确认：没有任何界面控件能把 `m.amend` 从 `false` 翻转为 `true`。
-- 推论：ROADMAP M5 进度记录写"支持 Amend"只有一半是真的——提交流程支持 amend 语义，但产品意义上的"Amend"功能（用户能触发它）不存在。这是一个已声明 ID 却被遗忘连接的"功能孤岛"，`amendID` 很可能是写 UI 时计划好要用、后来漏掉的。
+- UI 入口：`paintChangesSidebar` 使用 `f.Checkbox(amendID, m.amend)` 绘制可访问复选框，点击时更新 `m.amend`。Commit 和 Commit and Push 都读取该状态；Driver 测试检查控件存在并覆盖开关两种状态。
+- 当前差异：基线还包含下拉和时钟图标，本应用目前提供等价的 amend 开关语义，视觉控件尚未完全匹配。
 
 ## 2. 提交失败恢复核实
 
@@ -96,7 +96,7 @@ if (update.Kind == "commit" || update.Kind == "amend") && update.Err == nil {
 区分"后端已支持只缺UI"和"后端也不支持需要两端都做"，按优先级列出。
 
 **P0（功能性缺陷/缺口，直接影响用户能否用到已声明的功能）**
-1. **Amend 完全没有 UI 入口** — 后端 `CommitWithOptions` 和 UI 状态字段 `m.amend`/`amendID` 都已存在，只缺一个 `f.Checkbox(amendID, ...)` 绑定到 `paintChangesSidebar`（`shell.go` 约1287行提交区域附近）。后端已支持只缺UI，工作量最小、收益最大的一项。
+1. Amend 开关已接入并由 Driver 覆盖；剩余的是对齐基线的下拉/时钟视觉，以及独立验证 amend 后 HEAD 更新、未暂存内容不被带入和 hook 失败时模式/草稿保留。
 2. **Identity 检测完全不存在** — 后端也不支持，需要新增读取 `git config user.name`/`user.email`（含来源 system/global/local/worktree 的判定）的逻辑，以及克隆/打开仓库后检测缺失并提示的 UI 流程，两端都要做。
 3. **空暂存区点击 Commit 的边界情况未处理** — 需要在 Commit 按钮的 `Disabled` 条件里增加"是否有已暂存内容"的判断，或明确设计这种情况下的错误展示，目前完全依赖 Git 原生报错，用户体验未经验证。
 

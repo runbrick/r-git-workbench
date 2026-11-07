@@ -50,6 +50,82 @@ type Update struct {
 	DiscardPlan  repo.DiscardPlan
 	RestorePlan  repo.RestoreHunkPlan
 	Remotes      []string
+	HistoryPlan  repo.HistoryPlan
+	Stashes      []repo.Stash
+}
+
+func (session *Session) TagWrite(ctx context.Context, r *repo.Repository, operation, name, target, message string, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		var err error
+		if operation == "create" {
+			err = r.CreateTag(ctx, name, target, message)
+		} else if operation == "delete" {
+			err = r.DeleteTag(ctx, name)
+		} else {
+			err = fmt.Errorf("unknown tag operation %q", operation)
+		}
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "tag-" + operation, Err: err}, notify)
+	}()
+}
+
+func (session *Session) Stashes(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
+	go func() {
+		stashes, err := r.Stashes(ctx)
+		session.deliver(Update{Repository: r, Kind: "stashes", Stashes: stashes, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) StashDiff(ctx context.Context, r *repo.Repository, sha string, request uint64, notify func()) {
+	go func() {
+		diff, err := r.StashDiff(ctx, sha)
+		session.deliver(Update{Repository: r, Kind: "stash-diff", Message: diff, Path: sha, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) StashWrite(ctx context.Context, r *repo.Repository, operation, ref, message string, includeUntracked bool, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		var err error
+		switch operation {
+		case "save":
+			err = r.SaveStash(ctx, message, includeUntracked)
+		case "apply":
+			err = r.ApplyStash(ctx, ref, false)
+		case "pop":
+			err = r.ApplyStash(ctx, ref, true)
+		case "drop":
+			err = r.DropStash(ctx, ref)
+		case "branch":
+			err = r.BranchFromStash(ctx, message, ref)
+		default:
+			err = fmt.Errorf("unknown stash operation %q", operation)
+		}
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "stash-" + operation, Err: err}, notify)
+	}()
+}
+
+func (session *Session) ResolveConflict(ctx context.Context, r *repo.Repository, path, side string, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.ResolveConflict(ctx, path, side)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Path: path, Kind: "resolve-conflict", Err: err}, notify)
+	}()
 }
 
 func (session *Session) Refs(ctx context.Context, r *repo.Repository, request uint64, notify func()) {
@@ -210,6 +286,47 @@ func (session *Session) PlanDiscard(ctx context.Context, r *repo.Repository, pat
 	go func() {
 		plan, err := r.PlanDiscard(ctx, path)
 		session.deliver(Update{Repository: r, Kind: "discard-plan", Path: path, DiscardPlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) PlanHistory(ctx context.Context, r *repo.Repository, action, target string, request uint64, notify func()) {
+	go func() {
+		plan, err := r.PlanHistory(ctx, action, target)
+		session.deliver(Update{Repository: r, Kind: "history-plan", HistoryPlan: plan, Request: request, Err: err}, notify)
+	}()
+}
+
+func (session *Session) ExecuteHistory(ctx context.Context, r *repo.Repository, plan repo.HistoryPlan, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		err := r.ExecuteHistory(ctx, plan)
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "history-operation", Err: err}, notify)
+	}()
+}
+
+func (session *Session) ResolveOperation(ctx context.Context, r *repo.Repository, action string, notify func()) {
+	go func() {
+		session.writes.Lock()
+		defer session.writes.Unlock()
+		var err error
+		switch action {
+		case "abort":
+			err = r.AbortOperation(ctx)
+		case "skip":
+			err = r.SkipOperation(ctx)
+		default:
+			err = r.ContinueOperation(ctx)
+		}
+		status, refreshErr := r.Status(ctx)
+		if err == nil {
+			err = refreshErr
+		}
+		session.deliver(Update{Repository: r, Status: status, Kind: "history-operation", Err: err}, notify)
 	}()
 }
 

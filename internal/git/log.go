@@ -7,14 +7,15 @@ import (
 )
 
 type Commit struct {
-	SHA     string
-	Parents []string
-	Author  string
-	Date    string
-	Subject string
+	SHA       string
+	Parents   []string
+	Author    string
+	Committer string
+	Date      string
+	Subject   string
 }
 
-// ParseLog reads records from git log -z --format with five NUL-terminated fields.
+// ParseLog reads records from git log -z --format with six NUL-terminated fields.
 func ParseLog(data []byte) ([]Commit, error) {
 	var commits []Commit
 	for len(data) > 0 {
@@ -22,7 +23,7 @@ func ParseLog(data []byte) ([]Commit, error) {
 		if len(data) == 0 {
 			break
 		}
-		var fields [5]string
+		var fields [6]string
 		for i := range fields {
 			end := bytes.IndexByte(data, 0)
 			if end < 0 {
@@ -34,7 +35,7 @@ func ParseLog(data []byte) ([]Commit, error) {
 		if len(fields[0]) != 40 && len(fields[0]) != 64 {
 			return nil, fmt.Errorf("invalid commit SHA %q", fields[0])
 		}
-		commits = append(commits, Commit{SHA: fields[0], Parents: strings.Fields(fields[1]), Author: fields[2], Date: fields[3], Subject: fields[4]})
+		commits = append(commits, Commit{SHA: fields[0], Parents: strings.Fields(fields[1]), Author: fields[2], Committer: fields[3], Date: fields[4], Subject: fields[5]})
 	}
 	return commits, nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,9 +115,27 @@ func TestDriverOpenStageAndCommit(t *testing.T) {
 		t.Fatal("comparison disappeared after scroll")
 	}
 	click(stageID)
-	wait(func() bool { return !m.busy })
+	wait(func() bool { return !m.busy && m.message.Text() == "" })
 	if len(m.status.Files) != 1 || m.status.Files[0].Index != 'A' {
 		t.Fatalf("staged: %+v; %s", m.status, m.operationError)
+	}
+	if fileStatusLabel(m.status.Files[0]) != "A" {
+		t.Fatalf("staged file status marker: %q", fileStatusLabel(m.status.Files[0]))
+	}
+	amendVisible := false
+	for _, hit := range driver.Snapshot().Hits {
+		amendVisible = amendVisible || hit.ID == amendID
+	}
+	if !amendVisible {
+		t.Fatal("Amend checkbox is missing from the commit panel")
+	}
+	click(amendID)
+	if !m.amend {
+		t.Fatal("Amend checkbox did not enable amend mode")
+	}
+	click(amendID)
+	if m.amend {
+		t.Fatal("Amend checkbox did not disable amend mode")
 	}
 	click(fileScope.At(1))
 	wait(func() bool { return m.showComparison })
@@ -142,10 +161,11 @@ func TestDriverOpenStageAndCommit(t *testing.T) {
 	if err := driver.Resize(1100, 720); err != nil {
 		t.Fatal(err)
 	}
-	click(commitID)
 	wait(func() bool { return !m.busy })
+	click(commitID)
+	wait(func() bool { return !m.busy && m.message.Text() == "" })
 	if m.operationError != "" || len(m.status.Files) != 0 || m.message.Text() != "" {
-		t.Fatalf("commit: %+v; error=%s; message=%q", m.status, m.operationError, m.message.Text())
+		t.Fatalf("commit: %+v; error=%s; message=%q; busy=%t; active=%q", m.status, m.operationError, m.message.Text(), m.busy, m.activeOperation)
 	}
 	click(ids[1])
 	wait(func() bool { return !m.logLoading && len(m.commits) == 1 })
@@ -310,5 +330,99 @@ func TestDriverOpenStageAndCommit(t *testing.T) {
 	click(errorDetailsID)
 	if !m.showErrorDetails {
 		t.Fatal("Git error details were not shown")
+	}
+}
+
+func TestDriverHistoryResetPreflightAndExecute(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "Driver Test")
+	run("config", "user.email", "driver@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	if err := os.WriteFile(file, []byte("changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-am", "changed")
+	r, status, err := repo.Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(i18n.English)
+	m.Active = keymap.ShowLog
+	m.repository, m.status = r, status
+	m.SetInitialGit(git.Installation{Path: gitPath, Version: git.Version{Major: 2, Minor: 40}}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.SetContext(ctx)
+	m.historyTarget.SetText(base)
+	m.historyAction = "reset-hard"
+	driver, err := app.NewDriver(m.Config(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	wait := func(check func() bool) {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for !check() {
+			select {
+			case <-driver.Wakes():
+				if err := driver.Pump(); err != nil {
+					t.Fatal(err)
+				}
+			case <-deadline:
+				t.Fatalf("timed out: %s", m.operationError)
+			}
+		}
+	}
+	click := func(id ui.ID) {
+		t.Helper()
+		for _, hit := range driver.Snapshot().Hits {
+			if hit.ID == id {
+				if err := driver.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		}
+		t.Fatalf("control %s missing", tree.Text(id))
+	}
+	click(tree.ID(feature, "history-preview"))
+	wait(func() bool { return !m.busy && m.historyPlan != nil })
+	if m.historyPlan.Action != "reset-hard" || m.historyPlan.Head != status.Head || len(m.historyPlan.Commits) != 1 {
+		t.Fatalf("history preview: %+v", m.historyPlan)
+	}
+	confirmationVisible := false
+	for _, painted := range driver.Snapshot().Texts {
+		confirmationVisible = confirmationVisible || strings.Contains(painted.Value, "reset-hard") || painted.Value == "history-confirm" || painted.Value == "Hard reset will discard:"
+	}
+	if !confirmationVisible {
+		t.Fatal("history preflight confirmation details were not painted")
+	}
+	click(historyConfirmID)
+	wait(func() bool { return !m.busy && m.historyPlan == nil && m.status.Head == base })
+	if got := run("rev-parse", "HEAD"); got != base {
+		t.Fatalf("reset HEAD = %s, want %s", got, base)
 	}
 }

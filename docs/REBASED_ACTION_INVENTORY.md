@@ -36,8 +36,8 @@ IntelliJ 有两种提交模式：默认"非模态提交"（Changes 面板直接�
 | `Git.Stage.Add.No.Content` | 仅跟踪文件但不暂存内容（`git add -N`） | 未实现 | P2 | 原生实现：intent-to-add，使用场景少 | 临时仓库测试新文件 add -N 后 diff 行为 |
 | `Git.Stage.Add.All`/`Git.Stage.Add.Tracked` | 暂存全部 / 暂存全部已跟踪文件 | 未实现 | P1 | 原生实现：工具栏"全部暂存"按钮 | 临时仓库多文件测试 |
 | `Git.Stage.Reset`/`Git.Stage.Revert` | 取消暂存 / 还原（Stage 面板语境下的 unstage 和 discard） | 已实现（非模态等价） | — | 已有 Unstage/Discard 覆盖 | 已有测试 |
-| `Git.Stage.AcceptTheirs`/`Git.Stage.AcceptYours` | 冲突文件在 Stage 面板直接接受 theirs/yours | 未实现 | P0（冲突解决必需） | 原生实现，属于 M7 冲突解决范围 | 真实合并冲突仓库测试 |
-| `Git.Stage.Merge` | 冲突文件打开合并视图 | 未实现 | P0 | 同上，M7 范围 | 同上 |
+| `Git.Stage.AcceptTheirs`/`Git.Stage.AcceptYours` | 冲突文件在 Stage 面板直接接受 theirs/yours | 部分实现 | P0（冲突解决必需） | Changes Diff 提供 Accept Incoming/Current，写 index 后刷新 | `TestResolveConflictAcceptsVersionAndBoth` + headless |
+| `Git.Stage.Merge` | 冲突文件打开合并视图 | 部分实现 | P0 | 有 Current/Incoming/Both 整文件操作；三方可编辑 Result 视图仍未实现 | 真实合并冲突测试 |
 | `Git.Stage.ThreeSideDiff` | 三方 Diff 查看（不应用，只看） | 未实现 | P1 | 原生实现，复用 M7 的三方视图能力 | 同上 |
 | `Git.Stage.ToggleIgnored` | 切换显示/隐藏 ignored 文件 | 已实现 | — | M5 已做"ignored 文件只读展示" | 已有测试 |
 | `Git.Stage.ToggleCommitAll` | 无暂存内容时自动提交全部改动的开关 | 部分实现 | P1 | 规格 §4.2 已提到相关设置项，需要补成可配置项 | Driver 测试设置开关 + 提交流程 |
@@ -139,16 +139,16 @@ git4idea 新增的 Worktree 管理面板，cetacean 完全未涉及，ROADMAP �
 
 | 动作 ID | 用户可见名称/功能 | 当前状态 | 优先级 | Go/Viva 方案 | 测试方式 |
 |---|---|---|---|---|---|
-| `Git.Stash` | 保存 Stash（可选消息、是否含未跟踪文件） | 未实现 | P0 | 原生实现，M8 核心，规格 §4.9 | 临时仓库 stash save 含/不含 untracked 测试 |
+| `Git.Stash` | 保存 Stash（可选消息、是否含未跟踪文件） | 已实现 | P0 | Stash 视图支持消息与 include-untracked 开关 | `TestStashLifecycleAndConflictResolution` |
 | `Git.Stash.Silently` | 静默 Stash（不弹确认框） | 未实现 | P1 | 原生实现，便捷变体 | 同上 |
 | `Git.Unstash` | 恢复 Stash（走 Apply/Pop 选择对话框） | 未实现 | P0 | 原生实现 | 临时仓库 unstash 测试 |
-| `Git.Stash.Apply` | Apply（保留 Stash 条目） | 未实现 | P0 | 原生实现，规格 §4.9 | 同上 |
-| `Git.Stash.Pop` | Pop（成功后删除该 Stash） | 未实现 | P0 | 原生实现 | 同上 |
-| `Git.Stash.UnstashAs` | 恢复为新分支 | 未实现 | P1 | 原生实现，规格 §4.9 | 同上 |
-| `Git.Stash.Drop` | 删除单个 Stash（需确认） | 未实现 | P0 | 原生实现 | 同上 |
-| `Git.Stash.Clear` | 清空全部 Stash（需确认） | 未实现 | P1 | 原生实现 | 同上 |
-| `Git.Show.Stash` | 显示 Stash 列表面板 | 未实现 | P0 | 原生实现，对应规格 Stash 主视图 | Driver 测试面板显示 |
-| `Git.Stash.Refresh` | 手动刷新 Stash 列表 | 未实现 | P2 | 需与"空闲不轮询"原则协调，优先走文件监听触发 | — |
+| `Git.Stash.Apply` | Apply（保留 Stash 条目） | 已实现 | P0 | 选中 stash 后 Apply | 同上 |
+| `Git.Stash.Pop` | Pop（成功后删除该 Stash） | 已实现 | P0 | 选中 stash 后 Pop；冲突时 Git 保留条目 | 同上 |
+| `Git.Stash.UnstashAs` | 恢复为新分支 | 已实现 | P1 | 输入分支名后用 `git stash branch` | 同上 |
+| `Git.Stash.Drop` | 删除单个 Stash（需确认） | 已实现 | P0 | UI 二次确认，执行时按 SHA 重新解析当前 stash ref | 同上 |
+| `Git.Stash.Clear` | 清空全部 Stash（需确认） | 未实现 | P1 | 可后续基于逐条 drop 预检实现 | 多条 stash 临时仓库测试 |
+| `Git.Show.Stash` | 显示 Stash 列表面板 | 已实现 | P0 | Stash 导航视图显示列表和详情 | Driver 测试面板显示 |
+| `Git.Stash.Refresh` | 手动刷新 Stash 列表 | 部分实现 | P2 | 进入 Stash 视图及写操作结束后异步刷新；无独立刷新按钮 | Driver |
 | `Git.Stash.Toggle.Split.Preview` | 切换 Stash 列表与 Diff 预览的分栏/独立显示 | 未实现 | P2 | 原生实现，视觉布局细节 | — |
 | Stash 冲突恢复流程 | 应用 Stash 产生冲突时进入冲突解决 | 未实现 | P0 | 原生实现，规格 §4.9"发生冲突时保留 Stash 并进入冲突流程" | 临时仓库构造 stash apply 冲突测试 |
 

@@ -12,8 +12,8 @@
 | M3 | 分支：选择器、Branches 视图、新建/切换/重命名/删除、upstream、Checkout 安全检查 | §4.5 | Checkout 覆盖文件时出现 Cancel/Stash/Force |
 | M4 | 远端：Fetch/Pull/Push、进度与取消、错误分类、Force push with lease | §4.6、§7 | bare 仓库测试覆盖 §6 全部错误分类中的可构造项 |
 | M5 | Changes 完整化：hunk 级暂存、Discard、Amend、提交并推送、提交消息历史、目录树模式 | §4.2 | 规格 §10 第 3、4 项 |
-| M6 | Merge / Rebase / Cherry-pick / Revert / Reset 与预检确认 | §4.4、§4.7 | 有损操作全部经过预检 |
-| M7 | 冲突解决：冲突清单、三方视图、Continue/Abort | §4.8 | 规格 §10 第 6 项 |
+| M6 | Merge / Rebase / Cherry-pick / Revert / Reset 与预检确认 | §4.4、§4.7 | 有损操作全部经过预检；计划、确认、过期拒绝与冲突状态有自动化测试 |
+| M7 | 冲突解决：冲突清单、简化 Current/Incoming/Both、Continue/Abort | §4.8 | 规格 §10 第 6 项 |
 | M8 | Stash 全流程 | §4.9 | 规格 §10 第 8 项 |
 | M9 | 快捷键：三套预设、Keymap 设置、冲突检测、命令面板 | §5 | 规格 §10 第 9 项 |
 | M10 | 设置、i18n 补全、无障碍审查、诊断导出 | §6、§7、§8 | 规格 §10 剩余项与三平台人工验收 |
@@ -45,7 +45,7 @@
 
 ## M1 进度
 
-已实现异步打开仓库（原生目录选择或路径输入）、porcelain v2 状态解析、Changes 分组、文件级 Stage/Unstage、并排只读 `CodeDiff` 和 Commit。比较两端分别取自 HEAD/index/工作区；二进制与超过 512 KiB 的文件回退到 Git patch。Windows 使用 `ReadDirectoryChangesW`、Linux 使用 inotify 监听工作树和 Git 目录，变更按 300 ms 合并刷新，切换仓库时取消旧监听；macOS 暂用手动刷新。写操作在仓库对象内串行，成功或失败后重新读取状态；提交失败保留输入，可展开原始错误。输出捕获有大小上限（一般命令 stdout 64 MiB、Diff 8 MiB、stderr 1 MiB）。Linux/macOS 子进程使用独立进程组，取消时终止整组；Windows 目前只终止直接 Git 进程，Job Object 仍待实现。临时仓库及 Driver 测试覆盖浏览打开、Diff、暂存、取消暂存、首次提交、外部编辑自动刷新、仓库切换、失败保留草稿、窄窗口布局；Linux inotify 的嵌套/新增目录在 WSL 运行测试通过。此纵切目前未实现 macOS 文件监听、大 Diff 的流式处理、Windows 子进程树取消与命令日志；Linux 运行中新目录监听注册失败仍须给出提示。大型仓库性能与三平台无障碍验收也未完成，不能据此决定 D7。
+已实现异步打开仓库（原生目录选择或路径输入）、porcelain v2 状态解析、Changes 分组、文件级 Stage/Unstage、并排只读 `CodeDiff` 和 Commit。比较两端分别取自 HEAD/index/工作区；二进制与超过 512 KiB 的文件回退到 Git patch。Windows 使用 `ReadDirectoryChangesW`、Linux 使用 inotify 监听工作树和 Git 目录，变更按 300 ms 合并刷新，切换仓库时取消旧监听；macOS 暂用手动刷新。写操作在仓库对象内串行，成功或失败后重新读取状态；提交失败保留输入，可展开原始错误。输出捕获有大小上限（一般命令 stdout 64 MiB、Diff 8 MiB、stderr 1 MiB）。Linux/macOS 子进程使用独立进程组，取消时终止整组；Windows 目前只终止直接 Git 进程，Job Object 仍待实现。临时仓库及 Driver 测试覆盖浏览打开、Diff、暂存、取消暂存、首次提交、外部编辑自动刷新、仓库切换、失败保留草稿、窄窗口布局；Linux inotify 的嵌套/新增目录在 WSL 运行测试通过。此纵切目前未实现 macOS 文件监听、大 Diff 的流式处理、Windows 子进程树取消与命令日志；Linux 运行中新目录监听注册失败仍须给出提示。大型仓库性能与三平台无障碍验收也未完成，D2 的最低版本验证和 D7 的预算验收仍待完成。
 
 M0 headless 与二进制测量见 [benchmarks/M0_WINDOWS.md](benchmarks/M0_WINDOWS.md)。
 
@@ -53,7 +53,7 @@ M0 headless 与二进制测量见 [benchmarks/M0_WINDOWS.md](benchmarks/M0_WINDO
 
 ## M2 进度
 
-Log 已接入按需加载的只读列表：首次进入加载 100 条，滚动到底部自动请求下一批，也可点击“加载更多”；提交消息、作者、路径、日期范围和分支/引用可由 Git 查询筛选并按筛选结果分页。选择提交后异步读取完整消息和文件路径，可选择文件查看与父提交对比的只读并排 Diff，并复制 SHA；合并提交与第一父提交比较。提交主题附带 HEAD、本地分支、远程分支和 Tag 的文本引用标签。主窗口参照 Rebased README 截图调整为深色紧凑工具栏、Lucide 图标导航轨道、常驻 Changes/多行 Commit 面板和中央 Log/右侧文件与提交详情；提交图按父 SHA 绘制可见行的轨道和节点，表格只声明可见行。真实仓库测试覆盖空历史、105 条提交的分页边界和滚动加载、消息/作者/路径/日期/引用筛选及新增、修改、删除和合并提交的文件 Diff；Driver 测试覆盖多行提交、筛选、选择、复制 SHA、文件 Diff、窄窗口布局及 10,000 条内存提交的可见行数量。提交图仅支持前六条可见轨道，复杂分支折叠和大仓库滚动基准尚未实现，M2 未完成。
+Log 已接入按需加载的只读列表：首次进入加载 100 条，滚动到底部自动请求下一批，也可点击“加载更多”；提交消息、作者、路径、日期范围和分支/引用可由 Git 查询筛选并按筛选结果分页。选择提交后异步读取完整消息和文件路径，可选择文件查看与父提交对比的只读并排 Diff，并复制 SHA；合并提交与第一父提交比较。提交列表采集并分别展示作者与提交者。主窗口参照 Rebased README 截图调整为深色紧凑工具栏、Lucide 图标导航轨道、常驻 Changes/多行 Commit 面板和中央 Log/右侧文件与提交详情；提交图按父 SHA 绘制可见行的轨道和节点，轨道数按实际活跃分支动态扩展，不会因超过六条轨道而覆盖分支。真实仓库测试覆盖空历史、105 条提交的分页边界和滚动加载、消息/作者/路径/日期/引用筛选及新增、修改、删除和合并提交的文件 Diff；Driver 测试覆盖多行提交、筛选、选择、复制 SHA、文件 Diff、窄窗口布局及 10,000 条内存提交的可见行数量。复杂分支折叠、Log 文件树、当前分支/所有分支快捷切换以及大仓库滚动基准尚未实现，M2 未完成。
 
 ## M3 进度
 
@@ -61,11 +61,27 @@ Branches 页面通过 `for-each-ref` 展示本地、远程分支及 upstream；�
 
 ## M4 进度
 
-顶栏已接入 Fetch、Pull 和 Push，均在后台执行并在完成后刷新状态、引用与 Log；Git 的 CR/LF 进度消息逐行投递至窗口，远端操作可取消。Branches 页提供上游默认目标与多远端选择；Pull 支持 Merge、Rebase、Fast-forward only 三种策略，默认 Merge，选择仅保留在当前窗口会话中；当前分支相对已 fetch upstream 的 ahead/behind 计数从 porcelain v2 读取并在分支选择器中显示。常规 Push 先预览所选目标远端/分支、两侧 SHA 与待推提交，确认后重新校验计划再执行。Push/Pull 使用当前分支 upstream 的分支名映射所选远端；Fetch 可指定所选远端。无 upstream、网络、认证和 hook 错误保留原始 Git 输出。Force push with lease 使用预检计划、展示目标远端/分支和本地 SHA/预期远端 SHA、二次确认，并在执行前重新校验后运行显式 `--force-with-lease`。真实 bare 仓库测试覆盖普通同步、rebase、ff-only 拒绝分叉、ahead/behind 计数、多远端待推提交预览及过期计划/lease 拒绝。Pull 策略持久化及错误分类 UI 尚未实现，M4 未完成。首发继续依赖系统 credential helper/SSH agent，不提供内置 askpass。
+顶栏已接入 Fetch、Pull 和 Push，均在后台执行并在完成后刷新状态、引用与 Log；Git 的 CR/LF 进度消息逐行投递至窗口，远端操作可取消。Branches 页提供上游默认目标与多远端选择；Pull 支持 Merge、Rebase、Fast-forward only 三种策略，默认 Merge，选择仅保留在当前窗口会话中；当前分支相对已 fetch upstream 的 ahead/behind 计数从 porcelain v2 读取并在分支选择器中显示。常规 Push 先预览所选目标远端/分支、两侧 SHA 与待推提交，确认后重新校验计划再执行。Push/Pull 使用当前分支 upstream 的分支名映射所选远端；Fetch 可指定所选远端。Git 原始错误输出会保留，但尚未按 Network/Auth/HookRejected/NonFastForward 等类别分类并给出针对性下一步。Force push with lease 使用预检计划、展示目标远端/分支和本地 SHA/预期远端 SHA、二次确认，并在执行前重新校验后运行显式 `--force-with-lease`。真实 bare 仓库测试覆盖普通同步、rebase、ff-only 拒绝分叉、ahead/behind 计数、多远端待推提交预览及过期计划/lease 拒绝。Pull 策略持久化和错误分类 UI 尚未实现，M4 未完成。首发继续依赖系统 credential helper/SSH agent，不提供内置 askpass。
 
 ## M5 进度
 
-已实现从 Git unified diff 解析独立 hunk，支持多 hunk 选择后暂存/取消暂存，并校验补丁指纹。未暂存 hunk 可预检、确认后局部还原工作区，执行时重新校验状态和 Diff；真实仓库测试覆盖多 hunk 暂存、局部还原与过期计划拒绝。提交区支持 Amend、最近 20 条提交消息选择，以及 Commit and Push（提交成功后进入推送预览确认，失败保留草稿）。Discard 先展示目标文件并确认，计划绑定状态和工作区内容；tracked 文件只还原工作区，untracked 文件经确认后删除，index 保留。Changes 支持目录缩进树视图及折叠、扁平分组视图和 ignored 文件只读展示。仓库测试覆盖 ignored 路径查询；Driver 覆盖模式切换、Discard 确认、窄窗口布局。M5 仍有 parity 缺口：Diff 中用 hunk 按钮选择而不是逐行内联勾选；任意单行扩展、改动导航及 Diff 显示选项待实现。
+已实现从 Git unified diff 解析独立 hunk，支持多 hunk 选择后暂存/取消暂存，并校验补丁指纹。未暂存 hunk 可预检、确认后局部还原工作区，执行时重新校验状态和 Diff；真实仓库测试覆盖多 hunk 暂存、局部还原与过期计划拒绝。提交区支持可见的 Amend 复选框、最近 20 条提交消息选择，以及 Commit and Push（提交成功后进入推送预览确认，失败保留草稿）。Discard 先展示目标文件并确认，计划绑定状态和工作区内容；tracked 文件只还原工作区，untracked 文件经确认后删除，index 保留。Changes 支持目录缩进树视图及折叠、扁平分组视图、ignored 文件只读展示和文件状态字母标记。仓库测试覆盖 ignored 路径查询；Driver 覆盖模式切换、Amend 控件、Discard 确认、窄窗口布局。M5 仍有 parity 缺口：Diff 中用 hunk 按钮选择而不是逐行内联勾选；任意单行扩展、改动导航及 Diff 显示选项待实现。
+
+## M6 进度
+
+已实现仓库操作状态检测；Reset soft/mixed/hard、Merge、Rebase、多提交 Cherry-pick 和单提交 Revert 均通过预检计划、确认后执行，并在执行时校验 HEAD、状态指纹及相关提交未变化。Cherry-pick 保留用户输入顺序，拒绝当前 HEAD 和不支持 mainline 选择的 merge commit；Revert 也拒绝未支持 mainline 的 merge commit。Merge/Rebase/Cherry-pick/Revert 要求干净工作区。进行中的操作可 Continue；Rebase/Cherry-pick 可 Skip；Abort 和 Skip 先要求 UI 确认。Rebase 状态读取 `done` 与 `git-rebase-todo` 并显示进度。Hard reset 预览列出工作区/暂存区修改、会被目标树覆盖的未跟踪路径，以及 HEAD 与目标提交之间受影响的已提交路径。真实仓库测试覆盖 Reset 模式、Merge Abort、Cherry-pick/Revert、多提交 Cherry-pick 顺序与过期计划、Cherry-pick/Rebase 冲突 Skip/Continue；Driver 覆盖硬重置预检与确认执行、Skip 可见性、Abort 确认和 Rebase 进度。M6 已按本里程碑验收标准完成；交互式 Rebase、Cherry-pick 空间选择器等扩展体验属于后续 parity 迭代。
+
+## M7-M10 进度（本轮）
+
+M7 部分完成：Changes 冲突文件行提供 Accept Current、Accept Incoming、Accept Both；操作后自动 `git add` 并刷新 index/status，Continue 在仍有未合并文件时禁用。真实 merge 冲突测试验证 Both 写入与暂存结果，Driver/headless 验证三个动作名称与布局。尚无 Current/Incoming/Result 三方可编辑视图、手工编辑入口、冲突块导航与逐项计数，不能标为完整完成。
+
+M8 核心流程已实现：Stash 列表含 SHA、分支、消息与日期；支持消息保存、选择是否包含未跟踪文件、Apply、Pop、Drop（二次确认）、从 stash 建分支和 Diff。写操作在仓库写锁内核对 stash SHA/ref 仍存在后执行，避免过期索引指向其他条目。真实仓库测试覆盖 untracked、apply 保留、branch 消耗、drop、Diff 和普通提交 SHA 拒绝。尚缺 stash apply/pop 冲突的会话级来源状态与专用恢复 UI、冲突恢复测试，因此 M8 尚未完整验收。
+
+M9 部分完成：动作有稳定字符串键、上下文元数据；新增 IntelliJ/VS Code/Default 三组基础绑定数据和同上下文冲突检测函数；Shell 的 Viva `OnShortcut` 接入 Ctrl/Cmd+1..4 视图导航与 Ctrl/Cmd+R 刷新，未知组合键不拦截。尚未实现预设切换/自定义绑定持久化 UI、按动作执行的统一调度、文本焦点以外完整上下文匹配和 Find Action 命令面板。
+
+M10 部分完成：新增 `internal/settings` JSON 原子写入存储，应用设置与按仓库路径哈希隔离的视图设置分开；已保存 Pull 默认策略、语言、三个分栏位置、Changes 树模式及 Log 两侧面板显隐。Settings 视图能切换语言与 Pull 策略。尚缺 identity/远端等 Git 配置设置、命令日志诊断导出、高对比/屏幕阅读器及三平台人工验收。
+
+M11/M12 本轮进度：Log 分支栏/详情栏新增可见性切换并按仓库存储，原有可拖分栏状态也写入仓库设置；调整后由 Driver 布局测试覆盖窄/宽窗口。补上 Tags 视图、lightweight/annotated tag 创建和二次确认删除；Tag 名和目标均由 Git 校验，真实仓库测试覆盖创建、目标和删除。M12 动作盘点已更新冲突接受与 Stash 核心能力状态，并添加 Stash/冲突控件 headless 检查。整体窗口仍缺 Rebased 截图基准的逐区对照、分支树/菜单、独立 Staging Area、逐行 Stage、Log 多选/上下文操作等大量动作；M11、M12 均未完成。
 
 ## Rebased parity 任务基线（2026-11-06）
 

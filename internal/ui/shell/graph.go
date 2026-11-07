@@ -8,20 +8,23 @@ import (
 	"r-git-workbench/internal/git"
 )
 
-const graphLanes = 6
-
 type graphRow struct {
 	lane   int
-	before [graphLanes]string
-	after  [graphLanes]string
-	merge  [graphLanes]bool
+	before []string
+	after  []string
+	merge  []bool
 }
 
 // buildGraph keeps pending parents in lanes, so a page can extend the graph
 // without restarting its tracks at the page boundary.
 func buildGraph(commits []git.Commit) []graphRow {
 	rows := make([]graphRow, len(commits))
-	var lanes [graphLanes]string
+	var lanes []string
+	ensureLane := func(index int) {
+		for len(lanes) <= index {
+			lanes = append(lanes, "")
+		}
+	}
 	for i, commit := range commits {
 		lane := -1
 		for j, sha := range lanes {
@@ -39,11 +42,13 @@ func buildGraph(commits []git.Commit) []graphRow {
 			}
 		}
 		if lane < 0 {
-			lane = graphLanes - 1
+			lane = len(lanes)
 		}
+		ensureLane(lane)
 		lanes[lane] = commit.SHA
 		row := &rows[i]
-		row.lane, row.before = lane, lanes
+		row.lane = lane
+		row.before = append([]string(nil), lanes...)
 		lanes[lane] = ""
 		for p, parent := range commit.Parents {
 			if parent == "" {
@@ -58,6 +63,9 @@ func buildGraph(commits []git.Commit) []graphRow {
 			}
 			if existing >= 0 {
 				if p > 0 {
+					for len(row.merge) <= existing {
+						row.merge = append(row.merge, false)
+					}
 					row.merge[existing] = true
 				}
 				continue
@@ -65,12 +73,18 @@ func buildGraph(commits []git.Commit) []graphRow {
 			place := lane
 			if p > 0 {
 				place = -1
-				for j := lane + 1; j < graphLanes; j++ {
+				for j := lane + 1; j < len(lanes); j++ {
 					if lanes[j] == "" {
 						place = j
 						break
 					}
 				}
+				if place < 0 {
+					place = len(lanes)
+				}
+			}
+			if place >= len(lanes) {
+				ensureLane(place)
 			}
 			if place >= 0 && lanes[place] != "" {
 				place = -1
@@ -82,13 +96,17 @@ func buildGraph(commits []git.Commit) []graphRow {
 				}
 			}
 			if place >= 0 {
+				ensureLane(place)
 				lanes[place] = parent
-				if p > 0 {
-					row.merge[place] = true
+			}
+			if place >= 0 && p > 0 {
+				for len(row.merge) <= place {
+					row.merge = append(row.merge, false)
 				}
+				row.merge[place] = true
 			}
 		}
-		row.after = lanes
+		row.after = append([]string(nil), lanes...)
 	}
 	return rows
 }
@@ -111,7 +129,7 @@ func paintGraph(canvas *ui.Canvas, bounds ui.Rect, scroll float32, rows []graphR
 		y := bounds.Y + float32(i)*rowHeight - scroll
 		for lane, sha := range row.before {
 			if sha != "" && lane != row.lane {
-				graphLine(canvas, bounds.X+12+float32(lane)*12, y, bounds.X+12+float32(lane)*12, y+rowHeight, graphColors[lane])
+				graphLine(canvas, bounds.X+12+float32(lane)*12, y, bounds.X+12+float32(lane)*12, y+rowHeight, graphColor(lane))
 			}
 		}
 		for lane, sha := range row.after {
@@ -120,19 +138,21 @@ func paintGraph(canvas *ui.Canvas, bounds ui.Rect, scroll float32, rows []graphR
 			}
 			x := bounds.X + 12 + float32(lane)*12
 			if lane == row.lane {
-				graphLine(canvas, x, y+rowHeight/2, x, y+rowHeight, graphColors[lane])
-			} else if row.merge[lane] {
-				graphLine(canvas, bounds.X+12+float32(row.lane)*12, y+rowHeight/2, x, y+rowHeight, graphColors[lane])
+				graphLine(canvas, x, y+rowHeight/2, x, y+rowHeight, graphColor(lane))
+			} else if lane < len(row.merge) && row.merge[lane] {
+				graphLine(canvas, bounds.X+12+float32(row.lane)*12, y+rowHeight/2, x, y+rowHeight, graphColor(lane))
 			}
 		}
 		x := bounds.X + 12 + float32(row.lane)*12
 		if i > 0 && row.before[row.lane] != "" {
-			graphLine(canvas, x, y, x, y+rowHeight/2, graphColors[row.lane])
+			graphLine(canvas, x, y, x, y+rowHeight/2, graphColor(row.lane))
 		}
-		canvas.Rounded(ui.Rect{X: x - 4, Y: y + rowHeight/2 - 4, Width: 8, Height: 8}, 4, graphColors[row.lane])
+		canvas.Rounded(ui.Rect{X: x - 4, Y: y + rowHeight/2 - 4, Width: 8, Height: 8}, 4, graphColor(row.lane))
 	}
 	canvas.Unclip()
 }
+
+func graphColor(lane int) ui.Color { return graphColors[lane%len(graphColors)] }
 
 func refLabels(sha string, refs []git.Ref, head string) string {
 	labels := make([]string, 0, 4)

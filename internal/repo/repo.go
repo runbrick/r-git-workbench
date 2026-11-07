@@ -50,6 +50,73 @@ func (r *Repository) Remotes(ctx context.Context) ([]string, error) {
 	return remotes, nil
 }
 
+func (r *Repository) CreateTag(ctx context.Context, name, target, message string) error {
+	if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+		return errors.New("tag name is required")
+	}
+	if target == "" {
+		return errors.New("tag target is required")
+	}
+	if strings.ContainsAny(target, "\x00\r\n") || strings.HasPrefix(target, "-") {
+		return errors.New("invalid tag target")
+	}
+	checked, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"check-ref-format", "refs/tags/" + name}})
+	if err != nil {
+		return fmt.Errorf("invalid tag name: %s", checked.Stderr)
+	}
+	resolved, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "--end-of-options", target + "^{commit}"}})
+	if err != nil {
+		return fmt.Errorf("resolve tag target: %w: %s", err, resolved.Stderr)
+	}
+	sha := strings.TrimSpace(string(resolved.Stdout))
+	r.write.Lock()
+	defer r.write.Unlock()
+	exists, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show-ref", "--verify", "--quiet", "refs/tags/" + name}})
+	if err == nil {
+		return errors.New("tag already exists")
+	}
+	if exists.ExitCode != 1 {
+		return fmt.Errorf("check tag: %w: %s", err, exists.Stderr)
+	}
+	args := []string{"tag"}
+	if strings.TrimSpace(message) != "" {
+		args = append(args, "-a", name, "-m", message)
+	} else {
+		args = append(args, name)
+	}
+	args = append(args, sha)
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("create tag: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) DeleteTag(ctx context.Context, name string) error {
+	if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+		return errors.New("tag name is required")
+	}
+	checked, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"check-ref-format", "refs/tags/" + name}})
+	if err != nil {
+		return fmt.Errorf("invalid tag name: %s", checked.Stderr)
+	}
+	refs, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show-ref", "--verify", "--hash", "refs/tags/" + name}})
+	if err != nil {
+		return fmt.Errorf("tag does not exist: %s", refs.Stderr)
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show-ref", "--verify", "--hash", "refs/tags/" + name}})
+	if err != nil || strings.TrimSpace(string(current.Stdout)) != strings.TrimSpace(string(refs.Stdout)) {
+		return errors.New("tag changed after preflight; review before deleting")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"tag", "-d", "--", name}, Write: true})
+	if err != nil {
+		return fmt.Errorf("delete tag: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
 func (r *Repository) Log(ctx context.Context, skip, limit int) ([]git.Commit, error) {
 	return r.LogQuery(ctx, skip, limit, LogFilter{})
 }
@@ -71,7 +138,7 @@ func (r *Repository) LogQuery(ctx context.Context, skip, limit int, filter LogFi
 	if skip < 0 || limit < 1 || limit > 200 {
 		return nil, errors.New("invalid log page")
 	}
-	args := []string{"log", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00", fmt.Sprintf("--skip=%d", skip), fmt.Sprintf("-n%d", limit)}
+	args := []string{"log", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%cn%x00%aI%x00%s%x00", fmt.Sprintf("--skip=%d", skip), fmt.Sprintf("-n%d", limit)}
 	if filter.Ref == "" {
 		args = append(args, "--all")
 	} else {
@@ -237,6 +304,176 @@ type FileDiff struct {
 	Left   string
 	Right  string
 	Binary bool
+}
+
+type Stash struct {
+	Ref     string
+	SHA     string
+	Branch  string
+	Subject string
+	Date    string
+}
+
+func (r *Repository) Stashes(ctx context.Context) ([]Stash, error) {
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"stash", "list", "--format=%gd%x00%H%x00%gs%x00%ci%x00"}, OutputLimit: 4 << 20})
+	if err != nil {
+		return nil, fmt.Errorf("list stashes: %w: %s", err, result.Stderr)
+	}
+	fields := bytes.Split(result.Stdout, []byte{0})
+	var stashes []Stash
+	for i := 0; i+3 < len(fields); i += 4 {
+		if len(fields[i]) == 0 {
+			continue
+		}
+		ref, sha, subject, date := strings.TrimSpace(string(fields[i])), strings.TrimSpace(string(fields[i+1])), strings.TrimSpace(string(fields[i+2])), strings.TrimSpace(string(fields[i+3]))
+		branch := ""
+		if start := strings.Index(subject, "On "); start == 0 {
+			if end := strings.Index(subject, ": "); end > 3 {
+				branch = subject[3:end]
+				subject = subject[end+2:]
+			}
+		}
+		stashes = append(stashes, Stash{Ref: ref, SHA: sha, Branch: branch, Subject: subject, Date: date})
+	}
+	return stashes, nil
+}
+
+func (r *Repository) SaveStash(ctx context.Context, message string, includeUntracked bool) error {
+	args := []string{"stash", "push"}
+	if includeUntracked {
+		args = append(args, "--include-untracked")
+	}
+	if strings.TrimSpace(message) != "" {
+		args = append(args, "-m", message)
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("save stash: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) ApplyStash(ctx context.Context, ref string, pop bool) error {
+	operation := "apply"
+	if pop {
+		operation = "pop"
+	}
+	return r.stashWrite(ctx, operation, ref)
+}
+
+func (r *Repository) DropStash(ctx context.Context, ref string) error {
+	r.write.Lock()
+	defer r.write.Unlock()
+	resolved, err := r.resolveStashRef(ctx, ref)
+	if err != nil {
+		return err
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"stash", "drop", resolved}, Write: true})
+	if err != nil {
+		return fmt.Errorf("drop stash: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) BranchFromStash(ctx context.Context, name, ref string) error {
+	if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+		return errors.New("invalid stash branch request")
+	}
+	check, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"check-ref-format", "--branch", name}})
+	if err != nil {
+		return fmt.Errorf("invalid stash branch name: %s", check.Stderr)
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	resolved, err := r.resolveStashRef(ctx, ref)
+	if err != nil {
+		return err
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"stash", "branch", name, resolved}, Write: true})
+	if err != nil {
+		return fmt.Errorf("create branch from stash: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) StashDiff(ctx context.Context, sha string) (string, error) {
+	if err := checkSHA(sha); err != nil {
+		return "", err
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"stash", "show", "--patch", "--include-untracked", sha}, OutputLimit: 8 << 20})
+	if err != nil {
+		return "", fmt.Errorf("show stash diff: %w: %s", err, result.Stderr)
+	}
+	return string(result.Stdout), nil
+}
+
+func (r *Repository) stashWrite(ctx context.Context, operation, ref string) error {
+	r.write.Lock()
+	defer r.write.Unlock()
+	resolved, err := r.resolveStashRef(ctx, ref)
+	if err != nil {
+		return err
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"stash", operation, resolved}, Write: true})
+	if err != nil {
+		return fmt.Errorf("%s stash: %w: %s", operation, err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) resolveStashRef(ctx context.Context, ref string) (string, error) {
+	if strings.ContainsAny(ref, "\x00\r\n") || ref == "" {
+		return "", errors.New("invalid stash reference")
+	}
+	stashes, err := r.Stashes(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, stash := range stashes {
+		if ref == stash.Ref || ref == stash.SHA {
+			return stash.Ref, nil
+		}
+	}
+	return "", errors.New("stash reference no longer exists")
+}
+
+func (r *Repository) ResolveConflict(ctx context.Context, path, side string) error {
+	if err := r.checkPath(path); err != nil {
+		return err
+	}
+	if side != "ours" && side != "theirs" && side != "both" {
+		return errors.New("unsupported conflict resolution")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	var result gitexec.Result
+	var err error
+	if side == "both" {
+		ours, oursErr := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show", ":2:" + path}, OutputLimit: 8 << 20})
+		if oursErr != nil {
+			return fmt.Errorf("read current conflict version: %w: %s", oursErr, ours.Stderr)
+		}
+		theirs, theirsErr := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"show", ":3:" + path}, OutputLimit: 8 << 20})
+		if theirsErr != nil {
+			return fmt.Errorf("read incoming conflict version: %w: %s", theirsErr, theirs.Stderr)
+		}
+		file := filepath.Join(r.Root, filepath.FromSlash(path))
+		if err := os.WriteFile(file, append(ours.Stdout, theirs.Stdout...), 0600); err != nil {
+			return fmt.Errorf("write combined conflict result: %w", err)
+		}
+	} else {
+		result, err = r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"checkout", "--" + side, "--", path}, Write: true})
+		if err != nil {
+			return fmt.Errorf("accept conflict version: %w: %s", err, result.Stderr)
+		}
+	}
+	result, err = r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"add", "--", path}, Write: true})
+	if err != nil {
+		return fmt.Errorf("mark conflict resolved: %w: %s", err, result.Stderr)
+	}
+	return nil
 }
 
 type DiscardPlan struct {
@@ -480,7 +717,7 @@ func (r *Repository) PlanPush(ctx context.Context, selectedRemote ...string) (Pu
 	if err != nil {
 		return PushPlan{}, fmt.Errorf("resolve remote push target: %w: %s", err, remoteSHA.Stderr)
 	}
-	commits, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", "--reverse", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00", upstreamRef + "..HEAD"}, OutputLimit: 4 << 20})
+	commits, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", "--reverse", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%cn%x00%aI%x00%s%x00", upstreamRef + "..HEAD"}, OutputLimit: 4 << 20})
 	if err != nil {
 		return PushPlan{}, fmt.Errorf("list commits to push: %w: %s", err, commits.Stderr)
 	}
@@ -516,7 +753,7 @@ func sameCommits(left, right []git.Commit) bool {
 		return false
 	}
 	for i := range left {
-		if left[i].SHA != right[i].SHA || left[i].Author != right[i].Author || left[i].Date != right[i].Date || left[i].Subject != right[i].Subject || !slices.Equal(left[i].Parents, right[i].Parents) {
+		if left[i].SHA != right[i].SHA || left[i].Author != right[i].Author || left[i].Committer != right[i].Committer || left[i].Date != right[i].Date || left[i].Subject != right[i].Subject || !slices.Equal(left[i].Parents, right[i].Parents) {
 			return false
 		}
 	}
@@ -1140,6 +1377,282 @@ func (r *Repository) SwitchBranch(ctx context.Context, name string) error {
 	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"switch", "--", name}, Write: true})
 	if err != nil {
 		return fmt.Errorf("switch branch: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+type HistoryPlan struct {
+	Action        string
+	Target        string
+	Resolved      string
+	Head          string
+	StatusHash    string
+	Commits       []git.Commit
+	DirtyFiles    []string
+	DataLossFiles []string
+}
+
+func (r *Repository) PlanHistory(ctx context.Context, action, target string) (HistoryPlan, error) {
+	if action != "merge" && action != "rebase" && action != "cherry-pick" && action != "revert" && action != "reset-soft" && action != "reset-mixed" && action != "reset-hard" {
+		return HistoryPlan{}, errors.New("unsupported history action")
+	}
+	if target == "" || strings.ContainsAny(target, "\x00\r\n") {
+		return HistoryPlan{}, errors.New("invalid history target")
+	}
+	operation, err := git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil {
+		return HistoryPlan{}, err
+	}
+	if operation.Kind != git.OperationNone {
+		return HistoryPlan{}, errors.New("another Git operation is already in progress")
+	}
+	targets := []string{target}
+	if action == "cherry-pick" {
+		targets = strings.Fields(strings.ReplaceAll(target, ",", " "))
+		if len(targets) == 0 {
+			return HistoryPlan{}, errors.New("cherry-pick requires at least one commit")
+		}
+	}
+	resolvedTargets := make([]string, 0, len(targets))
+	for _, item := range targets {
+		resolved, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "--end-of-options", item + "^{commit}"}})
+		if err != nil {
+			return HistoryPlan{}, fmt.Errorf("resolve history target %q: %w: %s", item, err, resolved.Stderr)
+		}
+		sha := strings.TrimSpace(string(resolved.Stdout))
+		if action == "cherry-pick" && slices.Contains(resolvedTargets, sha) {
+			return HistoryPlan{}, fmt.Errorf("cherry-pick target %q is listed more than once", item)
+		}
+		resolvedTargets = append(resolvedTargets, sha)
+	}
+	head, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"rev-parse", "--verify", "HEAD"}})
+	if err != nil {
+		return HistoryPlan{}, fmt.Errorf("resolve current HEAD: %w: %s", err, head.Stderr)
+	}
+	status, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"}, OutputLimit: 16 << 20})
+	if err != nil {
+		return HistoryPlan{}, fmt.Errorf("history preflight status: %w: %s", err, status.Stderr)
+	}
+	parsed, err := git.ParseStatus(status.Stdout)
+	if err != nil {
+		return HistoryPlan{}, err
+	}
+	dirty := make([]string, 0, len(parsed.Files))
+	dataLoss := make([]string, 0, len(parsed.Files))
+	var untracked []string
+	for _, file := range parsed.Files {
+		dirty = append(dirty, file.Path)
+		if file.Untracked {
+			untracked = append(untracked, file.Path)
+		} else if action == "reset-hard" && (file.Index != '.' || file.Worktree != '.') {
+			dataLoss = append(dataLoss, file.Path)
+		}
+	}
+	slices.Sort(dirty)
+	slices.Sort(dataLoss)
+	if (action == "merge" || action == "rebase" || action == "cherry-pick" || action == "revert") && len(dirty) > 0 {
+		return HistoryPlan{}, errors.New("working tree must be clean before this history operation")
+	}
+	plan := HistoryPlan{
+		Action: action, Target: target, Resolved: strings.Join(resolvedTargets, " "),
+		Head: strings.TrimSpace(string(head.Stdout)), StatusHash: fmt.Sprintf("%x", sha256.Sum256(status.Stdout)),
+		DirtyFiles: dirty, DataLossFiles: dataLoss,
+	}
+	if action == "cherry-pick" && slices.Contains(resolvedTargets, plan.Head) {
+		return HistoryPlan{}, errors.New("cannot cherry-pick the current HEAD")
+	}
+	if strings.HasPrefix(action, "reset-") || action == "revert" {
+		rangeSpec := plan.Resolved + "..HEAD"
+		args := []string{"log", "--reverse", "--topo-order", "-z", "--format=%H%x00%P%x00%an%x00%cn%x00%aI%x00%s%x00"}
+		if action == "revert" {
+			rangeSpec = plan.Resolved + "^.." + plan.Resolved
+			args = append(args, rangeSpec)
+		} else {
+			args = append(args, rangeSpec)
+		}
+		result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, OutputLimit: 8 << 20})
+		if err != nil {
+			return HistoryPlan{}, fmt.Errorf("list commits for history preflight: %w: %s", err, result.Stderr)
+		}
+		plan.Commits, err = git.ParseLog(result.Stdout)
+		if err != nil {
+			return HistoryPlan{}, err
+		}
+		if action == "revert" && len(plan.Commits) != 1 {
+			return HistoryPlan{}, errors.New("history target must resolve to exactly one commit")
+		}
+		if action == "revert" && len(plan.Commits[0].Parents) > 1 {
+			return HistoryPlan{}, errors.New("merge commits require selecting a mainline parent, which is not supported")
+		}
+	}
+	if action == "cherry-pick" {
+		for _, sha := range resolvedTargets {
+			result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"log", "-1", "-z", "--format=%H%x00%P%x00%an%x00%cn%x00%aI%x00%s%x00", sha}, OutputLimit: 1 << 20})
+			if err != nil {
+				return HistoryPlan{}, fmt.Errorf("read cherry-pick commit: %w: %s", err, result.Stderr)
+			}
+			commits, err := git.ParseLog(result.Stdout)
+			if err != nil || len(commits) != 1 {
+				return HistoryPlan{}, errors.New("cherry-pick target must resolve to a commit")
+			}
+			if len(commits[0].Parents) > 1 {
+				return HistoryPlan{}, errors.New("merge commits require selecting a mainline parent, which is not supported")
+			}
+			plan.Commits = append(plan.Commits, commits[0])
+		}
+	}
+	if action == "reset-hard" {
+		result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"diff", "--name-only", "--no-renames", "-z", plan.Resolved, plan.Head}, OutputLimit: 4 << 20})
+		if err != nil {
+			return HistoryPlan{}, fmt.Errorf("list committed files affected by hard reset: %w: %s", err, result.Stderr)
+		}
+		for _, rawPath := range bytes.Split(result.Stdout, []byte{0}) {
+			path := string(rawPath)
+			if path != "" && !slices.Contains(plan.DataLossFiles, path) {
+				plan.DataLossFiles = append(plan.DataLossFiles, path)
+			}
+		}
+		for _, path := range untracked {
+			result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: []string{"ls-tree", "-r", "--name-only", "-z", plan.Resolved, "--", path}, OutputLimit: 1 << 20})
+			if err != nil {
+				return HistoryPlan{}, fmt.Errorf("check untracked path against reset target: %w: %s", err, result.Stderr)
+			}
+			if len(result.Stdout) > 0 {
+				plan.DataLossFiles = append(plan.DataLossFiles, path)
+			}
+		}
+		slices.Sort(plan.DataLossFiles)
+	}
+	return plan, nil
+}
+
+func (r *Repository) ExecuteHistory(ctx context.Context, plan HistoryPlan) error {
+	if plan.Action == "" || plan.Target == "" || plan.Resolved == "" || plan.Head == "" || plan.StatusHash == "" {
+		return errors.New("invalid history plan")
+	}
+	r.write.Lock()
+	defer r.write.Unlock()
+	current, err := r.PlanHistory(ctx, plan.Action, plan.Target)
+	if err != nil {
+		return err
+	}
+	if current.Action != plan.Action || current.Resolved != plan.Resolved || current.Head != plan.Head || current.StatusHash != plan.StatusHash || !sameCommits(current.Commits, plan.Commits) || !slices.Equal(current.DirtyFiles, plan.DirtyFiles) || !slices.Equal(current.DataLossFiles, plan.DataLossFiles) {
+		return errors.New("repository changed after history preflight; review a new plan")
+	}
+	var args []string
+	switch plan.Action {
+	case "merge":
+		args = []string{"merge", "--", plan.Resolved}
+	case "rebase":
+		args = []string{"rebase", plan.Resolved}
+	case "cherry-pick":
+		args = append([]string{"cherry-pick", "--no-edit"}, strings.Fields(plan.Resolved)...)
+	case "revert":
+		args = []string{"revert", "--no-edit", plan.Resolved}
+	case "reset-soft":
+		args = []string{"reset", "--soft", plan.Resolved}
+	case "reset-mixed":
+		args = []string{"reset", "--mixed", plan.Resolved}
+	case "reset-hard":
+		args = []string{"reset", "--hard", plan.Resolved}
+	default:
+		return errors.New("unsupported history action")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", plan.Action, err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) SkipOperation(ctx context.Context) error {
+	state, err := git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil {
+		return err
+	}
+	var args []string
+	switch state.Kind {
+	case git.OperationRebase:
+		args = []string{"rebase", "--skip"}
+	case git.OperationCherryPick:
+		args = []string{"cherry-pick", "--skip"}
+	default:
+		return errors.New("skip is only available during rebase or cherry-pick")
+	}
+	initialKind := state.Kind
+	r.write.Lock()
+	defer r.write.Unlock()
+	state, err = git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil || state.Kind != initialKind {
+		return errors.New("Git operation changed before skip")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("skip Git operation: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) ContinueOperation(ctx context.Context) error {
+	state, err := git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil {
+		return err
+	}
+	var args []string
+	switch state.Kind {
+	case git.OperationMerge:
+		args = []string{"-c", "core.editor=true", "merge", "--continue"}
+	case git.OperationRebase:
+		args = []string{"-c", "core.editor=true", "rebase", "--continue"}
+	case git.OperationCherryPick:
+		args = []string{"-c", "core.editor=true", "cherry-pick", "--continue"}
+	case git.OperationRevert:
+		args = []string{"-c", "core.editor=true", "revert", "--continue"}
+	default:
+		return errors.New("no Git operation to continue")
+	}
+	initialKind := state.Kind
+	r.write.Lock()
+	defer r.write.Unlock()
+	state, err = git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil || state.Kind != initialKind {
+		return errors.New("Git operation changed before continue")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("continue Git operation: %w: %s", err, result.Stderr)
+	}
+	return nil
+}
+
+func (r *Repository) AbortOperation(ctx context.Context) error {
+	state, err := git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil {
+		return err
+	}
+	var args []string
+	switch state.Kind {
+	case git.OperationMerge:
+		args = []string{"merge", "--abort"}
+	case git.OperationRebase:
+		args = []string{"rebase", "--abort"}
+	case git.OperationCherryPick:
+		args = []string{"cherry-pick", "--abort"}
+	case git.OperationRevert:
+		args = []string{"revert", "--abort"}
+	default:
+		return errors.New("no Git operation to abort")
+	}
+	initialKind := state.Kind
+	r.write.Lock()
+	defer r.write.Unlock()
+	state, err = git.ReadOperationState(ctx, r.runner, r.Root)
+	if err != nil || state.Kind != initialKind {
+		return errors.New("Git operation changed before abort")
+	}
+	result, err := r.runner.Run(ctx, gitexec.Command{Dir: r.Root, Args: args, Write: true})
+	if err != nil {
+		return fmt.Errorf("abort Git operation: %w: %s", err, result.Stderr)
 	}
 	return nil
 }

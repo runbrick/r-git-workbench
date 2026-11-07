@@ -1,9 +1,72 @@
 package git
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"r-git-workbench/internal/gitexec"
 )
+
+func TestReadOperationState(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	command := exec.Command(gitPath, "init")
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	runner := gitexec.Runner{Path: gitPath}
+	gitPathResult, err := runner.Run(context.Background(), gitexec.Command{Dir: dir, Args: []string{"rev-parse", "--git-path", "MERGE_HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := strings.TrimSpace(string(gitPathResult.Stdout))
+	if !filepath.IsAbs(marker) {
+		marker = filepath.Join(dir, filepath.FromSlash(marker))
+	}
+	if err := os.WriteFile(marker, []byte("merge-target\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := ReadOperationState(context.Background(), runner, dir)
+	if err != nil || state.Kind != OperationMerge || state.Target != "merge-target" {
+		t.Fatalf("merge operation: %+v, %v", state, err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	rebasePath, err := runner.Run(context.Background(), gitexec.Command{Dir: dir, Args: []string{"rev-parse", "--git-path", "rebase-merge"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebaseDir := strings.TrimSpace(string(rebasePath.Stdout))
+	if !filepath.IsAbs(rebaseDir) {
+		rebaseDir = filepath.Join(dir, filepath.FromSlash(rebaseDir))
+	}
+	if err := os.Mkdir(rebaseDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state, err = ReadOperationState(context.Background(), runner, dir)
+	if err != nil || state.Kind != OperationRebase {
+		t.Fatalf("rebase operation: %+v, %v", state, err)
+	}
+	if err := os.WriteFile(filepath.Join(rebaseDir, "done"), []byte("pick abc\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rebaseDir, "git-rebase-todo"), []byte("pick def\npick ghi\n# comment\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err = ReadOperationState(context.Background(), runner, dir)
+	if err != nil || state.Current != 2 || state.Remaining != 2 {
+		t.Fatalf("rebase progress: %+v, %v", state, err)
+	}
+}
 
 func TestParseStatusBranchesRenamesAndConflicts(t *testing.T) {
 	data := strings.Join([]string{

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,6 +80,9 @@ func TestStageUnstageCommitAndStatus(t *testing.T) {
 	commits, err := r.Log(context.Background(), 0, 1)
 	if err != nil || len(commits) != 1 || commits[0].Subject != "initial" {
 		t.Fatalf("first log page: %+v, %v", commits, err)
+	}
+	if commits[0].Author != "Test" || commits[0].Committer != "Test" {
+		t.Fatalf("log identity: %+v", commits[0])
 	}
 	message, paths, err := r.CommitDetails(context.Background(), commits[0].SHA)
 	if err != nil || !strings.Contains(message, "initial") || len(paths) != 1 || paths[0] != "new.txt" {
@@ -945,6 +949,820 @@ func TestDeleteBranchRejectsStalePreflight(t *testing.T) {
 	}
 	if got := run("show-ref", "--verify", "refs/heads/feature/stale"); got == "" {
 		t.Fatal("branch was deleted after stale preflight")
+	}
+}
+
+func TestHistoryResetPlansModesAndRejectStaleState(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init")
+	run("config", "user.name", "History Test")
+	run("config", "user.email", "history@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	if err := os.WriteFile(file, []byte("changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "changed")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "reset-soft", base)
+	if err != nil || len(plan.Commits) != 1 {
+		t.Fatalf("soft reset plan: %+v, %v", plan, err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("rev-parse", "HEAD"); got != base {
+		t.Fatalf("soft reset HEAD = %s, want %s", got, base)
+	}
+	if got := run("diff", "--cached", "--", "file.txt"); !strings.Contains(got, "+changed") {
+		t.Fatalf("soft reset did not preserve staged change: %q", got)
+	}
+	run("commit", "-m", "changed again")
+	plan, err = r.PlanHistory(context.Background(), "reset-mixed", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || len(status.Files) != 1 || status.Files[0].Index != '.' || status.Files[0].Worktree != 'M' {
+		t.Fatalf("mixed reset state: %+v, %v", status, err)
+	}
+	plan, err = r.PlanHistory(context.Background(), "reset-hard", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.DataLossFiles) != 1 || plan.DataLossFiles[0] != "file.txt" {
+		t.Fatalf("hard reset data loss preview: %+v", plan.DataLossFiles)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "untracked-safe.txt"), []byte("safe\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("untracked collision\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = r.PlanHistory(context.Background(), "reset-hard", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(plan.DataLossFiles, "file.txt") || slices.Contains(plan.DataLossFiles, "untracked-safe.txt") {
+		t.Fatalf("hard reset untracked preview was inaccurate: %+v", plan.DataLossFiles)
+	}
+	if err := os.Remove(filepath.Join(dir, "untracked-safe.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "file.txt")); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "--allow-empty", "-m", "advance after preview")
+	if err := r.ExecuteHistory(context.Background(), plan); err == nil {
+		t.Fatal("accepted stale reset plan")
+	}
+}
+
+func TestMergeConflictIsDetectedAndCanBeAborted(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, err := run(args...)
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return out
+	}
+	must("init", "-b", "main")
+	must("config", "user.name", "Merge Test")
+	must("config", "user.email", "merge@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "file.txt")
+	must("commit", "-m", "base")
+	must("branch", "incoming")
+	if err := os.WriteFile(file, []byte("current\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "current")
+	must("switch", "incoming")
+	if err := os.WriteFile(file, []byte("incoming\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "incoming")
+	must("switch", "main")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "merge", "incoming")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err == nil {
+		t.Fatal("expected merge conflict")
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationMerge || len(status.Files) != 1 || !status.Files[0].Conflict {
+		t.Fatalf("merge conflict state: %+v, %v", status, err)
+	}
+	if _, err := r.PlanHistory(context.Background(), "rebase", "incoming"); err == nil {
+		t.Fatal("accepted a new history operation while merge is in progress")
+	}
+	if err := r.AbortOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationNone || len(status.Files) != 0 {
+		t.Fatalf("abort did not restore clean state: %+v, %v", status, err)
+	}
+}
+
+func TestCherryPickAndRevertPlansExecute(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "History Test")
+	run("config", "user.email", "history@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "base")
+	run("branch", "source")
+	run("switch", "source")
+	if err := os.WriteFile(file, []byte("base\nsource\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-am", "source change")
+	target := run("rev-parse", "HEAD")
+	run("switch", "main")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "cherry-pick", target)
+	if err != nil || len(plan.Commits) != 1 {
+		t.Fatalf("cherry-pick plan: %+v, %v", plan, err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("show", "HEAD:file.txt"); got != "base\nsource" {
+		t.Fatalf("cherry-pick result: %q", got)
+	}
+	plan, err = r.PlanHistory(context.Background(), "revert", target)
+	if err != nil || len(plan.Commits) != 1 {
+		t.Fatalf("revert plan: %+v, %v", plan, err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("show", "HEAD:file.txt"); got != "base" {
+		t.Fatalf("revert result: %q", got)
+	}
+	if _, err := r.PlanHistory(context.Background(), "cherry-pick", "--help"); err == nil {
+		t.Fatal("accepted an option-looking cherry-pick target")
+	}
+	stale, err := r.PlanHistory(context.Background(), "cherry-pick", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBeforeStaleExecute := run("rev-parse", "HEAD")
+	run("update-ref", "refs/heads/source", headBeforeStaleExecute)
+	if err := r.ExecuteHistory(context.Background(), stale); err == nil {
+		t.Fatal("accepted a cherry-pick plan after its source ref moved")
+	}
+	if got := run("rev-parse", "HEAD"); got != headBeforeStaleExecute {
+		t.Fatalf("stale cherry-pick changed HEAD: %s", got)
+	}
+}
+
+func TestCherryPickPlanPreservesMultipleCommitOrder(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "History Test")
+	run("config", "user.email", "history@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "base.txt")
+	run("commit", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	run("switch", "-c", "source")
+	if err := os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "first.txt")
+	run("commit", "-m", "first source commit")
+	first := run("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "second.txt")
+	run("commit", "-m", "second source commit")
+	second := run("rev-parse", "HEAD")
+	run("switch", "main")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "cherry-pick", first+", "+second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.PlanHistory(context.Background(), "cherry-pick", first+", "+first); err == nil {
+		t.Fatal("accepted duplicate cherry-pick targets")
+	}
+	if len(plan.Commits) != 2 || plan.Commits[0].SHA != first || plan.Commits[1].SHA != second {
+		t.Fatalf("ordered cherry-pick plan: %+v", plan.Commits)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("rev-parse", "HEAD^1"); got == base {
+		t.Fatal("second cherry-pick was not applied after the first")
+	}
+	if got := run("show", "HEAD^:first.txt"); got != "first" {
+		t.Fatalf("first cherry-pick is not the parent of the second: %q", got)
+	}
+	if got := run("show", "HEAD:first.txt"); got != "first" {
+		t.Fatalf("first cherry-pick content = %q", got)
+	}
+	if got := run("show", "HEAD:second.txt"); got != "second" {
+		t.Fatalf("second cherry-pick content = %q", got)
+	}
+}
+
+func TestHistoryPlansRejectEmptyAndUnsafeTargets(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	command := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	command("init", "-b", "main")
+	command("config", "user.name", "History Test")
+	command("config", "user.email", "history@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command("add", "file.txt")
+	command("commit", "-m", "base")
+	base := command("rev-parse", "HEAD")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"cherry-pick", "revert"} {
+		if _, err := r.PlanHistory(context.Background(), action, base); err == nil {
+			t.Errorf("%s accepted current HEAD as its own target", action)
+		}
+		if _, err := r.PlanHistory(context.Background(), action, "--help"); err == nil {
+			t.Errorf("%s accepted option-looking target", action)
+		}
+	}
+	if _, err := r.PlanHistory(context.Background(), "reset-hard", base+"^{}"); err != nil {
+		t.Fatalf("reset rejected valid rev syntax: %v", err)
+	}
+}
+
+func TestStashLifecycleAndConflictResolution(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "History Test")
+	run("config", "user.email", "history@example.com")
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "base")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SaveStash(context.Background(), "saved work", true); err != nil {
+		t.Fatal(err)
+	}
+	stashes, err := r.Stashes(context.Background())
+	if err != nil || len(stashes) != 1 || stashes[0].Subject != "saved work" {
+		t.Fatalf("stash list: %+v, %v", stashes, err)
+	}
+	if err := r.DropStash(context.Background(), run("rev-parse", "HEAD")); err == nil {
+		t.Fatal("drop accepted an ordinary commit instead of a stash")
+	}
+	if diff, err := r.StashDiff(context.Background(), stashes[0].SHA); err != nil || !strings.Contains(diff, "work") || !strings.Contains(diff, "new.txt") {
+		t.Fatalf("stash diff: %q, %v", diff, err)
+	}
+	if err := r.ApplyStash(context.Background(), stashes[0].SHA, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(run("stash", "list")) == 0 {
+		t.Fatal("apply removed the stash")
+	}
+	if err := r.SaveStash(context.Background(), "branch source", true); err != nil {
+		t.Fatal(err)
+	}
+	stashes, err = r.Stashes(context.Background())
+	if err != nil || len(stashes) != 2 {
+		t.Fatalf("stash list after second save: %+v, %v", stashes, err)
+	}
+	if err := r.BranchFromStash(context.Background(), "from-stash", stashes[0].Ref); err != nil {
+		t.Fatal(err)
+	}
+	if run("branch", "--show-current") != "from-stash" {
+		t.Fatal("stash branch did not switch to the created branch")
+	}
+	stashes, err = r.Stashes(context.Background())
+	if err != nil || len(stashes) != 1 {
+		t.Fatalf("branch did not consume selected stash: %+v, %v", stashes, err)
+	}
+	if err := r.DropStash(context.Background(), stashes[0].Ref); err != nil {
+		t.Fatal(err)
+	}
+	if stashes, err = r.Stashes(context.Background()); err != nil || len(stashes) != 0 {
+		t.Fatalf("drop did not remove stash: %+v, %v", stashes, err)
+	}
+}
+
+func TestCreateAndDeleteTag(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "Tag Test")
+	run("config", "user.email", "tag@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("tag\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "tag target")
+	target := run("rev-parse", "HEAD")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.CreateTag(context.Background(), "v1.0", "HEAD", "release one"); err != nil {
+		t.Fatal(err)
+	}
+	if run("cat-file", "-t", "refs/tags/v1.0") != "tag" {
+		t.Fatal("message tag is not annotated")
+	}
+	if run("rev-parse", "refs/tags/v1.0^{}") != target {
+		t.Fatal("annotated tag points at wrong commit")
+	}
+	if err := r.DeleteTag(context.Background(), "v1.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Command(gitPath, "show-ref", "--verify", "refs/tags/v1.0").Output(); err == nil {
+		t.Fatal("tag still exists after delete")
+	}
+	if err := r.CreateTag(context.Background(), "bad name", "HEAD", ""); err == nil {
+		t.Fatal("accepted an invalid tag name")
+	}
+}
+
+func TestResolveConflictAcceptsVersionAndBoth(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, err := run(args...)
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return out
+	}
+	must("init", "-b", "main")
+	must("config", "user.name", "History Test")
+	must("config", "user.email", "history@example.com")
+	path := filepath.Join(dir, "conflict.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "conflict.txt")
+	must("commit", "-m", "base")
+	must("switch", "-c", "incoming")
+	if err := os.WriteFile(path, []byte("incoming\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "incoming")
+	must("switch", "main")
+	if err := os.WriteFile(path, []byte("current\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "current")
+	if _, err := run("merge", "incoming"); err == nil {
+		t.Fatal("expected merge conflict")
+	}
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ResolveConflict(context.Background(), "conflict.txt", "both"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || string(content) != "current\nincoming\n" {
+		t.Fatalf("combined result = %q, %v", content, err)
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || status.Files[0].Conflict || status.Files[0].Index != 'M' {
+		t.Fatalf("resolved conflict index state: %+v, %v", status.Files, err)
+	}
+}
+
+func TestCherryPickRefMustResolveToSameCommitAtExecute(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "History Test")
+	run("config", "user.email", "history@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	run("branch", "source")
+	run("switch", "source")
+	if err := os.WriteFile(file, []byte("base\nsource\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-am", "source")
+	source := run("rev-parse", "HEAD")
+	run("switch", "main")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "cherry-pick", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Resolved != source || len(plan.Commits) != 1 || plan.Commits[0].SHA != source {
+		t.Fatalf("plan did not bind target commit: %+v", plan)
+	}
+	run("switch", "source")
+	if err := os.WriteFile(filepath.Join(dir, "later.txt"), []byte("later\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "later.txt")
+	run("commit", "-m", "later source")
+	run("switch", "main")
+	if err := r.ExecuteHistory(context.Background(), plan); err == nil {
+		t.Fatal("accepted a plan after the source ref moved")
+	}
+	if got := run("rev-parse", "HEAD"); got != base {
+		t.Fatalf("stale cherry-pick changed HEAD: %s", got)
+	}
+}
+
+func TestCherryPickConflictCanBeSkipped(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, err := run(args...)
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return out
+	}
+	must("init", "-b", "main")
+	must("config", "user.name", "History Test")
+	must("config", "user.email", "history@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "file.txt")
+	must("commit", "-m", "base")
+	must("switch", "-c", "source")
+	if err := os.WriteFile(file, []byte("source\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "source")
+	target := must("rev-parse", "HEAD")
+	must("switch", "main")
+	if err := os.WriteFile(file, []byte("main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "main")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "cherry-pick", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err == nil {
+		t.Fatal("expected cherry-pick conflict")
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationCherryPick || len(status.Files) != 1 || !status.Files[0].Conflict {
+		t.Fatalf("cherry-pick conflict state: %+v, %v", status, err)
+	}
+	if err := r.SkipOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationNone || len(status.Files) != 0 {
+		t.Fatalf("skip did not clear cherry-pick state: %+v, %v", status, err)
+	}
+	if err := r.SkipOperation(context.Background()); err == nil {
+		t.Fatal("skip accepted without an active sequenced operation")
+	}
+}
+
+func TestRebaseConflictCanContinueAfterResolution(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, err := run(args...)
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return out
+	}
+	must("init", "-b", "main")
+	must("config", "user.name", "History Test")
+	must("config", "user.email", "history@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "file.txt")
+	must("commit", "-m", "base")
+	must("switch", "-c", "feature")
+	if err := os.WriteFile(file, []byte("feature\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "feature change")
+	must("switch", "main")
+	if err := os.WriteFile(file, []byte("main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "main change")
+	must("switch", "feature")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "rebase", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err == nil {
+		t.Fatal("expected rebase conflict")
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationRebase || len(status.Files) != 1 || !status.Files[0].Conflict {
+		t.Fatalf("rebase conflict state: %+v, %v", status, err)
+	}
+	if err := os.WriteFile(file, []byte("resolved\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "file.txt")
+	if err := r.ContinueOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationNone || len(status.Files) != 0 {
+		t.Fatalf("continue did not complete rebase: %+v, %v", status, err)
+	}
+}
+
+func TestRebaseSkipContinuesRemainingCommits(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("system Git is unavailable")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global"), "GIT_CONFIG_SYSTEM="+filepath.Join(dir, "system"))
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, err := run(args...)
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return out
+	}
+	must("init", "-b", "main")
+	must("config", "user.name", "History Test")
+	must("config", "user.email", "history@example.com")
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "file.txt")
+	must("commit", "-m", "base")
+	must("switch", "-c", "feature")
+	if err := os.WriteFile(file, []byte("feature\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "conflicting feature")
+	if err := os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("add", "second.txt")
+	must("commit", "-m", "clean feature")
+	must("switch", "main")
+	if err := os.WriteFile(file, []byte("main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	must("commit", "-am", "main change")
+	must("switch", "feature")
+	r, _, err := Open(context.Background(), gitPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PlanHistory(context.Background(), "rebase", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ExecuteHistory(context.Background(), plan); err == nil {
+		t.Fatal("expected rebase conflict")
+	}
+	status, err := r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationRebase {
+		t.Fatalf("rebase state: %+v, %v", status, err)
+	}
+	if err := r.SkipOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(context.Background())
+	if err != nil || status.Operation.Kind != git.OperationNone || len(status.Files) != 0 {
+		t.Fatalf("rebase skip did not finish remaining commits: %+v, %v", status, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "second.txt")); err != nil {
+		t.Fatalf("remaining commit was not applied: %v", err)
 	}
 }
 
