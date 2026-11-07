@@ -19,6 +19,7 @@ import (
 	"r-git-workbench/internal/i18n"
 	"r-git-workbench/internal/keymap"
 	"r-git-workbench/internal/repo"
+	"r-git-workbench/internal/settings"
 	"r-git-workbench/internal/workbench"
 )
 
@@ -30,170 +31,214 @@ var (
 		tree.ID(feature, "branches"), tree.ID(feature, "stash"),
 		tree.ID(feature, "tags"), tree.ID(feature, "repositories"),
 	}
-	openID             = tree.ID(feature, "open")
-	branchID           = tree.ID(feature, "branch")
-	branchNameID       = tree.ID(feature, "branch-name")
-	createBranchID     = tree.ID(feature, "create-branch")
-	fetchID            = tree.ID(feature, "fetch")
-	pullID             = tree.ID(feature, "pull")
-	pushID             = tree.ID(feature, "push")
-	pullMergeID        = tree.ID(feature, "pull-policy-merge")
-	pullRebaseID       = tree.ID(feature, "pull-policy-rebase")
-	pullFFOnlyID       = tree.ID(feature, "pull-policy-ff-only")
-	searchID           = tree.ID(feature, "search")
-	pathID             = tree.ID(feature, "repository-path")
-	browseID           = tree.ID(feature, "browse")
-	refreshID          = tree.ID(feature, "refresh")
-	branchRefreshID    = tree.ID(feature, "branch-refresh")
-	stageID            = tree.ID(feature, "stage")
-	unstageID          = tree.ID(feature, "unstage")
-	commitID           = tree.ID(feature, "commit")
-	messageID          = tree.ID(feature, "commit-message")
-	fileScope          = tree.Sub(feature, tree.Name("files"))
-	branchScope        = tree.Sub(feature, tree.Name("branch-refs"))
-	remoteScope        = tree.Sub(feature, tree.Name("remote-targets"))
-	branchSwitchScope  = tree.Sub(feature, tree.Name("branch-switches"))
-	fileListID         = tree.ID(feature, "file-list")
-	diffScrollID       = tree.ID(feature, "diff-scroll")
-	toggleDiffID       = tree.ID(feature, "toggle-diff")
-	diffID             = tree.ID(feature, "comparison")
-	diffVScrollID      = tree.ID(feature, "comparison-vscroll")
-	diffHScrollID      = tree.ID(feature, "comparison-hscroll")
-	diffViewportID     = tree.ID(feature, "comparison-viewport")
-	hunkScope          = tree.Sub(feature, tree.Name("diff-hunks"))
-	amendID            = tree.ID(feature, "amend")
-	commitPushID       = tree.ID(feature, "commit-and-push")
-	messageHistoryID   = tree.ID(feature, "commit-message-history")
-	treeModeID         = tree.ID(feature, "changes-tree-mode")
-	flatModeID         = tree.ID(feature, "changes-flat-mode")
-	discardID          = tree.ID(feature, "discard")
-	discardConfirmID   = tree.ID(feature, "discard-confirm")
-	applyHunksID       = tree.ID(feature, "apply-selected-hunks")
-	restoreHunksID     = tree.ID(feature, "restore-selected-hunks")
-	restoreConfirmID   = tree.ID(feature, "restore-hunks-confirm")
-	ignoredToggleID    = tree.ID(feature, "show-ignored")
-	errorDetailsID     = tree.ID(feature, "error-details")
-	errorScrollID      = tree.ID(feature, "error-scroll")
-	logScope           = tree.Sub(feature, tree.Name("commits"))
-	logScrollID        = tree.ID(feature, "log-scroll")
-	logHeaderScope     = tree.Sub(feature, tree.Name("commit-columns"))
-	logDetailsID       = tree.ID(feature, "log-details")
-	logFilesID         = tree.ID(feature, "log-files")
-	loadMoreID         = tree.ID(feature, "load-more")
-	logFilterID        = tree.ID(feature, "log-filter")
-	logAuthorID        = tree.ID(feature, "log-author")
-	logPathID          = tree.ID(feature, "log-path")
-	logSinceID         = tree.ID(feature, "log-since")
-	logUntilID         = tree.ID(feature, "log-until")
-	logRefID           = tree.ID(feature, "log-ref")
-	filterSubmitID     = tree.ID(feature, "filter-submit")
-	filterClearID      = tree.ID(feature, "filter-clear")
-	commitFileScope    = tree.Sub(feature, tree.Name("commit-files"))
-	copySHAID          = tree.ID(feature, "copy-sha")
-	commitDiffScrollID = tree.ID(feature, "commit-diff-scroll")
-	commitDiffID       = tree.ID(feature, "commit-comparison")
-	commitVScrollID    = tree.ID(feature, "commit-comparison-vscroll")
-	commitHScrollID    = tree.ID(feature, "commit-comparison-hscroll")
-	commitViewportID   = tree.ID(feature, "commit-comparison-viewport")
+	openID              = tree.ID(feature, "open")
+	branchID            = tree.ID(feature, "branch")
+	branchNameID        = tree.ID(feature, "branch-name")
+	createBranchID      = tree.ID(feature, "create-branch")
+	fetchID             = tree.ID(feature, "fetch")
+	pullID              = tree.ID(feature, "pull")
+	pushID              = tree.ID(feature, "push")
+	pullMergeID         = tree.ID(feature, "pull-policy-merge")
+	pullRebaseID        = tree.ID(feature, "pull-policy-rebase")
+	pullFFOnlyID        = tree.ID(feature, "pull-policy-ff-only")
+	searchID            = tree.ID(feature, "search")
+	pathID              = tree.ID(feature, "repository-path")
+	browseID            = tree.ID(feature, "browse")
+	refreshID           = tree.ID(feature, "refresh")
+	branchRefreshID     = tree.ID(feature, "branch-refresh")
+	stageID             = tree.ID(feature, "stage")
+	unstageID           = tree.ID(feature, "unstage")
+	commitID            = tree.ID(feature, "commit")
+	messageID           = tree.ID(feature, "commit-message")
+	fileScope           = tree.Sub(feature, tree.Name("files"))
+	branchScope         = tree.Sub(feature, tree.Name("branch-refs"))
+	remoteScope         = tree.Sub(feature, tree.Name("remote-targets"))
+	branchSwitchScope   = tree.Sub(feature, tree.Name("branch-switches"))
+	fileListID          = tree.ID(feature, "file-list")
+	diffScrollID        = tree.ID(feature, "diff-scroll")
+	toggleDiffID        = tree.ID(feature, "toggle-diff")
+	diffID              = tree.ID(feature, "comparison")
+	diffVScrollID       = tree.ID(feature, "comparison-vscroll")
+	diffHScrollID       = tree.ID(feature, "comparison-hscroll")
+	diffViewportID      = tree.ID(feature, "comparison-viewport")
+	hunkScope           = tree.Sub(feature, tree.Name("diff-hunks"))
+	amendID             = tree.ID(feature, "amend")
+	commitPushID        = tree.ID(feature, "commit-and-push")
+	messageHistoryID    = tree.ID(feature, "commit-message-history")
+	treeModeID          = tree.ID(feature, "changes-tree-mode")
+	flatModeID          = tree.ID(feature, "changes-flat-mode")
+	discardID           = tree.ID(feature, "discard")
+	discardConfirmID    = tree.ID(feature, "discard-confirm")
+	applyHunksID        = tree.ID(feature, "apply-selected-hunks")
+	restoreHunksID      = tree.ID(feature, "restore-selected-hunks")
+	restoreConfirmID    = tree.ID(feature, "restore-hunks-confirm")
+	ignoredToggleID     = tree.ID(feature, "show-ignored")
+	errorDetailsID      = tree.ID(feature, "error-details")
+	errorScrollID       = tree.ID(feature, "error-scroll")
+	logScope            = tree.Sub(feature, tree.Name("commits"))
+	logScrollID         = tree.ID(feature, "log-scroll")
+	logHeaderScope      = tree.Sub(feature, tree.Name("commit-columns"))
+	logDetailsID        = tree.ID(feature, "log-details")
+	logFilesID          = tree.ID(feature, "log-files")
+	loadMoreID          = tree.ID(feature, "load-more")
+	logFilterID         = tree.ID(feature, "log-filter")
+	logAuthorID         = tree.ID(feature, "log-author")
+	logPathID           = tree.ID(feature, "log-path")
+	logSinceID          = tree.ID(feature, "log-since")
+	logUntilID          = tree.ID(feature, "log-until")
+	logRefID            = tree.ID(feature, "log-ref")
+	filterSubmitID      = tree.ID(feature, "filter-submit")
+	filterClearID       = tree.ID(feature, "filter-clear")
+	commitFileScope     = tree.Sub(feature, tree.Name("commit-files"))
+	copySHAID           = tree.ID(feature, "copy-sha")
+	commitDiffScrollID  = tree.ID(feature, "commit-diff-scroll")
+	commitDiffID        = tree.ID(feature, "commit-comparison")
+	commitVScrollID     = tree.ID(feature, "commit-comparison-vscroll")
+	commitHScrollID     = tree.ID(feature, "commit-comparison-hscroll")
+	commitViewportID    = tree.ID(feature, "commit-comparison-viewport")
+	historyTargetID     = tree.ID(feature, "history-target")
+	historyPlanID       = tree.ID(feature, "history-plan")
+	historyConfirmID    = tree.ID(feature, "history-confirm")
+	mergeID             = tree.ID(feature, "history-merge")
+	rebaseID            = tree.ID(feature, "history-rebase")
+	resetSoftID         = tree.ID(feature, "history-reset-soft")
+	resetMixedID        = tree.ID(feature, "history-reset-mixed")
+	resetHardID         = tree.ID(feature, "history-reset-hard")
+	continueOperationID = tree.ID(feature, "history-continue")
+	abortOperationID    = tree.ID(feature, "history-abort")
+	skipOperationID     = tree.ID(feature, "history-skip")
+	stashMessageID      = tree.ID(feature, "stash-message")
+	stashSaveID         = tree.ID(feature, "stash-save")
+	stashUntrackedID    = tree.ID(feature, "stash-include-untracked")
+	stashBranchNameID   = tree.ID(feature, "stash-branch-name")
+	stashDropConfirmID  = tree.ID(feature, "stash-drop-confirm")
+	tagNameID           = tree.ID(feature, "tag-name")
+	tagTargetID         = tree.ID(feature, "tag-target")
+	tagMessageID        = tree.ID(feature, "tag-message")
+	settingsLanguageID  = tree.ID(feature, "settings-language")
+	settingsPullID      = tree.ID(feature, "settings-pull")
 )
 
 type Model struct {
-	Language             i18n.Language
-	Active               keymap.ActionID
-	Git                  git.Installation
-	DetectionErr         error
-	Checking             bool
-	view                 flex.View
-	mailbox              workbench.Session
-	invalidator          app.Invalidator
-	path                 flex.Field
-	branchName           flex.Field
-	localBranchName      flex.Field
-	branchRenameOld      string
-	message              commitDraft
-	amend                bool
-	commitAndPush        bool
-	messageHistory       []string
-	messageLabels        []string
-	messageHistorySelect flex.SelectState
-	selectedHistory      int
-	treeMode             bool
-	discardPlan          *repo.DiscardPlan
-	restorePlan          *repo.RestoreHunkPlan
-	selectedHunks        []bool
-	restoreIgnored       bool
-	expandedPaths        map[string]bool
-	ignoredPaths         []string
-	ignoredRequest       uint64
-	messageRequest       uint64
-	logQuery             flex.Field
-	logAuthor            flex.Field
-	logPath              flex.Field
-	logSince             flex.Field
-	logUntil             flex.Field
-	logRef               flex.Field
-	logFilter            repo.LogFilter
-	repository           *repo.Repository
-	status               git.Status
-	selected             int
-	selectedStaged       bool
-	diff                 string
-	hunks                []git.Hunk
-	comparison           repo.FileDiff
-	aligned              components.CodeDiffResult
-	codeDiff             components.CodeDiff
-	diffSlot             flex.Box
-	showComparison       bool
-	busy                 bool
-	activeOperation      string
-	operationError       string
-	showErrorDetails     bool
-	request              uint64
-	openRequest          uint64
-	ctx                  context.Context
-	width                float32
-	height               float32
-	watchCancel          context.CancelFunc
-	watchPending         bool
-	commits              []git.Commit
-	logTable             flex.TableState
-	logSource            commitRows
-	logTableBounds       flex.Box
-	logColumns           [5]components.TableColumn
-	graphRows            []graphRow
-	refs                 []git.Ref
-	remotes              []string
-	selectedRemote       string
-	deletePlan           *repo.BranchDeletePlan
-	deletePending        string
-	checkoutPlan         *repo.RemoteCheckoutPlan
-	confirmForceCheckout bool
-	remoteCancel         context.CancelFunc
-	remoteProgress       string
-	pullPolicy           repo.PullPolicy
-	forcePushPlan        *repo.ForcePushPlan
-	pushPlan             *repo.PushPlan
-	confirmForcePush     bool
-	refsRequest          uint64
-	remotesRequest       uint64
-	logLoading           bool
-	logHasMore           bool
-	logRequest           uint64
-	detailsRequest       uint64
-	selectedCommit       string
-	commitMessage        string
-	commitFiles          []string
-	selectedCommitFile   string
-	commitFileRequest    uint64
-	commitFileDiff       repo.FileDiff
-	commitFileAligned    components.CodeDiffResult
-	commitFileReady      bool
-	commitDiff           components.CodeDiff
-	commitDiffSlot       flex.Box
-	changesSplit         flex.SplitterState
-	logBranchesSplit     flex.SplitterState
-	logDetailsSplit      flex.SplitterState
-	logBranchScope       ui.Scope
+	Language              i18n.Language
+	Active                keymap.ActionID
+	Git                   git.Installation
+	DetectionErr          error
+	Checking              bool
+	view                  flex.View
+	mailbox               workbench.Session
+	invalidator           app.Invalidator
+	path                  flex.Field
+	branchName            flex.Field
+	localBranchName       flex.Field
+	branchRenameOld       string
+	message               commitDraft
+	amend                 bool
+	commitAndPush         bool
+	historyTarget         flex.Field
+	historyActionSelect   flex.SelectState
+	historyToolsOpen      bool
+	historyPlan           *repo.HistoryPlan
+	operationConfirm      string
+	historyAction         string
+	historyRequest        uint64
+	messageHistory        []string
+	messageLabels         []string
+	messageHistorySelect  flex.SelectState
+	selectedHistory       int
+	treeMode              bool
+	discardPlan           *repo.DiscardPlan
+	restorePlan           *repo.RestoreHunkPlan
+	selectedHunks         []bool
+	restoreIgnored        bool
+	expandedPaths         map[string]bool
+	ignoredPaths          []string
+	ignoredRequest        uint64
+	messageRequest        uint64
+	logQuery              flex.Field
+	logAuthor             flex.Field
+	logPath               flex.Field
+	logSince              flex.Field
+	logUntil              flex.Field
+	logRef                flex.Field
+	logFilter             repo.LogFilter
+	repository            *repo.Repository
+	status                git.Status
+	selected              int
+	selectedStaged        bool
+	diff                  string
+	hunks                 []git.Hunk
+	comparison            repo.FileDiff
+	aligned               components.CodeDiffResult
+	codeDiff              components.CodeDiff
+	diffSlot              flex.Box
+	showComparison        bool
+	busy                  bool
+	activeOperation       string
+	operationError        string
+	showErrorDetails      bool
+	request               uint64
+	openRequest           uint64
+	ctx                   context.Context
+	width                 float32
+	height                float32
+	watchCancel           context.CancelFunc
+	watchPending          bool
+	commits               []git.Commit
+	logTable              flex.TableState
+	logSource             commitRows
+	logTableBounds        flex.Box
+	logColumns            [6]components.TableColumn
+	graphRows             []graphRow
+	graphWidth            float32
+	refs                  []git.Ref
+	remotes               []string
+	selectedRemote        string
+	deletePlan            *repo.BranchDeletePlan
+	deletePending         string
+	checkoutPlan          *repo.RemoteCheckoutPlan
+	confirmForceCheckout  bool
+	remoteCancel          context.CancelFunc
+	remoteProgress        string
+	pullPolicy            repo.PullPolicy
+	forcePushPlan         *repo.ForcePushPlan
+	pushPlan              *repo.PushPlan
+	confirmForcePush      bool
+	refsRequest           uint64
+	remotesRequest        uint64
+	logLoading            bool
+	logHasMore            bool
+	logRequest            uint64
+	detailsRequest        uint64
+	selectedCommit        string
+	commitMessage         string
+	commitFiles           []string
+	selectedCommitFile    string
+	commitFileRequest     uint64
+	commitFileDiff        repo.FileDiff
+	commitFileAligned     components.CodeDiffResult
+	commitFileReady       bool
+	commitDiff            components.CodeDiff
+	commitDiffSlot        flex.Box
+	changesSplit          flex.SplitterState
+	logBranchesSplit      flex.SplitterState
+	logDetailsSplit       flex.SplitterState
+	logBranchScope        ui.Scope
+	settingsStore         *settings.Store
+	appSettings           settings.App
+	repoSettings          settings.Repository
+	stashes               []repo.Stash
+	selectedStash         string
+	stashDiff             string
+	stashMessage          flex.Field
+	stashBranchName       flex.Field
+	stashIncludeUntracked bool
+	stashPending          string
+	stashRequest          uint64
+	tagName               flex.Field
+	tagTarget             flex.Field
+	tagMessage            flex.Field
+	tagPending            string
 }
 
 type commitRows struct {
@@ -214,23 +259,42 @@ func (rows *commitRows) Cell(row, column int) string {
 	case 2:
 		return commit.Author
 	case 3:
+		return commit.Committer
+	case 4:
 		if len(commit.Date) >= 16 {
 			return commit.Date[5:10] + " " + commit.Date[11:16]
 		}
 		return commit.Date
-	default:
+	case 5:
 		return commit.SHA[:8]
+	default:
+		return ""
 	}
 }
 
 var compactCommitColumns = [...]components.TableColumn{{Width: 84}, {}}
 
 func New(language i18n.Language) *Model {
-	return &Model{
+	m := &Model{
 		Language: language, Active: keymap.ShowRepositories, Checking: true, selected: -1, ctx: context.Background(),
 		changesSplit: flex.SplitterState{Pos: 300}, logBranchesSplit: flex.SplitterState{Pos: 150},
 		logDetailsSplit: flex.SplitterState{Pos: 310}, logBranchScope: tree.Sub(feature, tree.Name("log-branches")),
 	}
+	if store, err := settings.User(); err == nil {
+		m.settingsStore = store
+		if saved, err := store.LoadApp(); err == nil {
+			m.appSettings = saved
+			if saved.PullPolicy == "rebase" {
+				m.pullPolicy = repo.PullRebase
+			} else if saved.PullPolicy == "ff-only" {
+				m.pullPolicy = repo.PullFFOnly
+			}
+			if saved.Language == "zh" {
+				m.Language = i18n.Chinese
+			}
+		}
+	}
+	return m
 }
 
 func (m *Model) SetContext(ctx context.Context) { m.ctx = ctx }
@@ -242,6 +306,21 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 		return
 	}
 	m.repository, m.status, m.Active = r, status, keymap.ShowLog
+	if m.settingsStore != nil {
+		if saved, err := m.settingsStore.LoadRepository(r.Root); err == nil {
+			m.repoSettings = saved
+			if saved.ChangesSplit > 0 {
+				m.changesSplit.Pos = saved.ChangesSplit
+			}
+			if saved.LogBranchesSplit > 0 {
+				m.logBranchesSplit.Pos = saved.LogBranchesSplit
+			}
+			if saved.LogDetailsSplit > 0 {
+				m.logDetailsSplit.Pos = saved.LogDetailsSplit
+			}
+			m.treeMode = saved.TreeMode
+		}
+	}
 	m.logQuery.SetText("")
 	m.logAuthor.SetText("")
 	m.logPath.SetText("")
@@ -255,6 +334,55 @@ func (m *Model) SetInitialRepository(r *repo.Repository, status git.Status, err 
 	m.loadLog()
 	m.loadRefs()
 	m.loadRemotes()
+	m.loadStashes()
+}
+
+func (m *Model) saveAppSettings() {
+	if m.settingsStore == nil {
+		return
+	}
+	switch m.pullPolicy {
+	case repo.PullRebase:
+		m.appSettings.PullPolicy = "rebase"
+	case repo.PullFFOnly:
+		m.appSettings.PullPolicy = "ff-only"
+	default:
+		m.appSettings.PullPolicy = "merge"
+	}
+	if m.Language == i18n.Chinese {
+		m.appSettings.Language = "zh"
+	} else {
+		m.appSettings.Language = "en"
+	}
+	if err := m.settingsStore.SaveApp(m.appSettings); err != nil {
+		m.operationError = err.Error()
+	}
+}
+
+func (m *Model) saveRepositorySettings() {
+	if m.settingsStore == nil || m.repository == nil {
+		return
+	}
+	m.repoSettings.ChangesSplit = m.changesSplit.Pos
+	m.repoSettings.LogBranchesSplit = m.logBranchesSplit.Pos
+	m.repoSettings.LogDetailsSplit = m.logDetailsSplit.Pos
+	m.repoSettings.TreeMode = m.treeMode
+	if err := m.settingsStore.SaveRepository(m.repository.Root, m.repoSettings); err != nil {
+		m.operationError = err.Error()
+	}
+}
+
+func (m *Model) panelVisible(name string) bool {
+	visible, configured := m.repoSettings.PanelVisible[name]
+	return !configured || visible
+}
+
+func (m *Model) setPanelVisible(name string, visible bool) {
+	if m.repoSettings.PanelVisible == nil {
+		m.repoSettings.PanelVisible = make(map[string]bool)
+	}
+	m.repoSettings.PanelVisible[name] = visible
+	m.saveRepositorySettings()
 }
 
 func (m *Model) loadMessages() {
@@ -263,6 +391,28 @@ func (m *Model) loadMessages() {
 	}
 	m.messageRequest++
 	m.mailbox.RecentMessages(m.ctx, m.repository, m.messageRequest, m.invalidator.Invalidate)
+}
+
+func (m *Model) loadStashes() {
+	if m.repository == nil {
+		return
+	}
+	m.stashRequest++
+	m.mailbox.Stashes(m.ctx, m.repository, m.stashRequest, m.invalidator.Invalidate)
+}
+
+func (m *Model) selectStash(stash repo.Stash) {
+	m.selectedStash = stash.SHA
+	m.stashDiff = ""
+	m.mailbox.StashDiff(m.ctx, m.repository, stash.SHA, m.stashRequest, m.invalidator.Invalidate)
+}
+
+func (m *Model) stashWrite(operation, ref, message string) {
+	if m.repository == nil || m.busy {
+		return
+	}
+	m.busy, m.activeOperation, m.operationError = true, "stash-"+operation, ""
+	m.mailbox.StashWrite(m.ctx, m.repository, operation, ref, message, m.stashIncludeUntracked, m.invalidator.Invalidate)
 }
 
 func (m *Model) loadIgnored() {
@@ -434,6 +584,38 @@ func (m *Model) planPush() {
 	m.mailbox.PlanPush(m.ctx, m.repository, m.selectedRemote, m.invalidator.Invalidate)
 }
 
+func (m *Model) planHistory(action string) {
+	if m.repository == nil || m.busy {
+		return
+	}
+	target := strings.TrimSpace(m.historyTarget.Text())
+	if target == "" {
+		return
+	}
+	m.historyAction = action
+	m.historyRequest++
+	m.busy, m.operationError = true, ""
+	m.activeOperation = "history-plan"
+	m.mailbox.PlanHistory(m.ctx, m.repository, action, target, m.historyRequest, m.invalidator.Invalidate)
+}
+
+func (m *Model) resolveOperation(action string) {
+	if m.repository == nil || m.busy {
+		return
+	}
+	if action == "abort" || action == "skip" {
+		m.operationConfirm = action
+		return
+	}
+	m.executeOperation(action)
+}
+
+func (m *Model) executeOperation(action string) {
+	m.busy, m.operationError = true, ""
+	m.activeOperation = "history-operation"
+	m.mailbox.ResolveOperation(m.ctx, m.repository, action, m.invalidator.Invalidate)
+}
+
 // SetInitialGit applies startup detection before the window thread begins.
 func (m *Model) SetInitialGit(installation git.Installation, err error) {
 	m.Git, m.DetectionErr, m.Checking = installation, err, false
@@ -464,7 +646,7 @@ func (m *Model) Config() app.Config {
 				m.message.ensure()
 				return &m.message.input
 			}
-			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.logQuery, &m.logAuthor, &m.logPath, &m.logSince, &m.logUntil, &m.logRef)(context)
+			return flex.Fields(&m.path, &m.branchName, &m.localBranchName, &m.historyTarget, &m.logQuery, &m.logAuthor, &m.logPath, &m.logSince, &m.logUntil, &m.logRef, &m.stashMessage, &m.stashBranchName, &m.tagName, &m.tagTarget, &m.tagMessage)(context)
 		},
 		OnScroll: func(event ui.ScrollEvent) ui.EventResult {
 			if m.Active == keymap.ShowLog && contains(m.logTableBounds.Rect(), event.X, event.Y) {
@@ -485,6 +667,7 @@ func (m *Model) Config() app.Config {
 		OnKey: func(event ui.KeyEvent) ui.EventResult {
 			for _, split := range []*flex.SplitterState{&m.changesSplit, &m.logBranchesSplit, &m.logDetailsSplit} {
 				if result := split.Key(event); result.Handled {
+					m.saveRepositorySettings()
 					return result
 				}
 			}
@@ -500,7 +683,33 @@ func (m *Model) Config() app.Config {
 			}
 			return ui.EventResult{}
 		},
+		OnShortcut: func(event ui.KeyEvent) ui.EventResult {
+			if event.Modifiers&(ui.ModifierControl|ui.ModifierMeta) == 0 || event.Text == "" || event.Target == messageID || event.Target == stashMessageID || event.Target == stashBranchNameID {
+				return ui.EventResult{}
+			}
+			switch strings.ToLower(event.Text) {
+			case "1":
+				m.Active = keymap.ShowChanges
+			case "2":
+				m.Active = keymap.ShowLog
+			case "3":
+				m.Active = keymap.ShowBranches
+			case "4":
+				m.Active = keymap.ShowStash
+				m.loadStashes()
+			case "t":
+				m.Active = keymap.ShowTags
+			case "r":
+				m.refresh()
+			default:
+				return ui.EventResult{}
+			}
+			return ui.EventResult{Handled: true, Repaint: true}
+		},
 		OnPointer: func(event ui.PointerEvent) ui.EventResult {
+			if event.Kind == ui.PointerUp && (event.Target == tree.ID(feature, "changes-split") || event.Target == tree.ID(feature, "log-branches-split") || event.Target == tree.ID(feature, "log-details-split")) {
+				m.saveRepositorySettings()
+			}
 			if m.Active == keymap.ShowLog && m.selectedCommit != "" && event.Kind == ui.PointerDown && event.Target == copySHAID && event.Button == ui.PointerButtonPrimary {
 				return ui.EventResult{Handled: true, ClipboardText: m.selectedCommit}
 			}
@@ -551,6 +760,9 @@ func (m *Model) Config() app.Config {
 				if update.Kind == "discard-plan" && update.Request != m.request {
 					continue
 				}
+				if update.Kind == "history-plan" && update.Request != m.historyRequest {
+					continue
+				}
 				if update.Kind == "refresh" && m.activeOperation != "refresh" {
 					continue
 				}
@@ -564,6 +776,21 @@ func (m *Model) Config() app.Config {
 				case "open":
 					if update.Err == nil {
 						m.repository, m.status = update.Repository, update.Status
+						if m.settingsStore != nil {
+							if saved, err := m.settingsStore.LoadRepository(update.Repository.Root); err == nil {
+								m.repoSettings = saved
+								if saved.ChangesSplit > 0 {
+									m.changesSplit.Pos = saved.ChangesSplit
+								}
+								if saved.LogBranchesSplit > 0 {
+									m.logBranchesSplit.Pos = saved.LogBranchesSplit
+								}
+								if saved.LogDetailsSplit > 0 {
+									m.logDetailsSplit.Pos = saved.LogDetailsSplit
+								}
+								m.treeMode = saved.TreeMode
+							}
+						}
 						m.logQuery.SetText("")
 						m.logAuthor.SetText("")
 						m.logPath.SetText("")
@@ -585,6 +812,7 @@ func (m *Model) Config() app.Config {
 						m.loadLog()
 						m.loadRefs()
 						m.loadRemotes()
+						m.loadStashes()
 					}
 				case "diff":
 					if update.Err == nil && m.selected >= 0 && m.selected < len(m.status.Files) && m.status.Files[m.selected].Path == update.Path && m.selectedStaged == update.Staged {
@@ -605,6 +833,10 @@ func (m *Model) Config() app.Config {
 						m.commits = append(m.commits, update.Commits...)
 						m.logSource.commits = m.commits
 						m.graphRows = buildGraph(m.commits)
+						m.graphWidth = 84
+						for _, row := range m.graphRows {
+							m.graphWidth = max(m.graphWidth, 24+float32(max(len(row.before), len(row.after)))*12)
+						}
 						m.logHasMore = len(update.Commits) == 100
 						if m.selectedCommit == "" && len(m.commits) > 0 {
 							m.selectCommit(m.commits[0].SHA)
@@ -634,6 +866,55 @@ func (m *Model) Config() app.Config {
 					}
 				case "restore-hunks":
 					m.restorePlan = nil
+				case "history-plan":
+					if update.Err == nil {
+						m.historyPlan = &update.HistoryPlan
+					}
+					m.busy = false
+					m.activeOperation = ""
+				case "history-operation":
+					m.historyPlan = nil
+					m.operationConfirm = ""
+					if update.Status.Root != "" {
+						m.status = update.Status
+						m.loadRefs()
+						m.selected, m.diff, m.showComparison = -1, "", false
+						m.resetLog()
+						m.loadLog()
+					}
+				case "stashes":
+					if update.Request == m.stashRequest && update.Err == nil {
+						m.stashes = update.Stashes
+						if !slices.ContainsFunc(m.stashes, func(stash repo.Stash) bool { return stash.SHA == m.selectedStash }) {
+							m.selectedStash, m.stashDiff = "", ""
+						}
+						if m.selectedStash == "" && len(m.stashes) > 0 {
+							m.selectStash(m.stashes[0])
+						}
+					}
+				case "stash-diff":
+					if update.Err == nil && update.Path == m.selectedStash {
+						m.stashDiff = update.Message
+					}
+				case "stash-save", "stash-apply", "stash-pop", "stash-drop", "stash-branch":
+					m.stashPending = ""
+					if update.Status.Root != "" {
+						m.status = update.Status
+					}
+					m.loadStashes()
+					m.loadRefs()
+					m.resetLog()
+					m.loadLog()
+				case "tag-create", "tag-delete":
+					m.tagPending = ""
+					m.loadRefs()
+					m.resetLog()
+					m.loadLog()
+				case "resolve-conflict":
+					if update.Status.Root != "" {
+						m.status = update.Status
+					}
+					m.selected, m.diff, m.showComparison = -1, "", false
 				case "ignored":
 					if update.Err == nil {
 						m.ignoredPaths = update.Paths
@@ -755,7 +1036,7 @@ func (m *Model) Config() app.Config {
 						m.watchPending = false
 					}
 					if update.Status.Root != "" {
-						unchanged := update.Kind == "refresh" && m.status.Root == update.Status.Root && m.status.Head == update.Status.Head && m.status.Branch == update.Status.Branch && m.status.Ahead == update.Status.Ahead && m.status.Behind == update.Status.Behind && m.status.HasTrack == update.Status.HasTrack && slices.Equal(m.status.Files, update.Status.Files)
+						unchanged := update.Kind == "refresh" && m.status.Root == update.Status.Root && m.status.Head == update.Status.Head && m.status.Branch == update.Status.Branch && m.status.Ahead == update.Status.Ahead && m.status.Behind == update.Status.Behind && m.status.HasTrack == update.Status.HasTrack && m.status.Operation == update.Status.Operation && slices.Equal(m.status.Files, update.Status.Files)
 						m.status = update.Status
 						if !unchanged {
 							m.diff = ""
@@ -794,6 +1075,7 @@ func (m *Model) Config() app.Config {
 			if m.watchCancel != nil {
 				m.watchCancel()
 			}
+			m.saveRepositorySettings()
 		},
 	}
 	config.Paint = func(canvas *ui.Canvas, size ui.Size) {
@@ -884,6 +1166,7 @@ func (m *Model) paintTop(f *flex.Frame) {
 				}
 				if f.Button(pullMergeID, mergeLabel).Ghost().Small().Disabled(m.busy).Clicked() {
 					m.pullPolicy = repo.PullMerge
+					m.saveAppSettings()
 				}
 				rebaseLabel := text(i18n.PullRebase)
 				if m.pullPolicy == repo.PullRebase {
@@ -891,6 +1174,7 @@ func (m *Model) paintTop(f *flex.Frame) {
 				}
 				if f.Button(pullRebaseID, rebaseLabel).Ghost().Small().Disabled(m.busy).Clicked() {
 					m.pullPolicy = repo.PullRebase
+					m.saveAppSettings()
 				}
 				ffOnlyLabel := text(i18n.PullFFOnly)
 				if m.pullPolicy == repo.PullFFOnly {
@@ -898,6 +1182,7 @@ func (m *Model) paintTop(f *flex.Frame) {
 				}
 				if f.Button(pullFFOnlyID, ffOnlyLabel).Ghost().Small().Disabled(m.busy).Clicked() {
 					m.pullPolicy = repo.PullFFOnly
+					m.saveAppSettings()
 				}
 				if f.Button(pullID, text(i18n.Pull)).Ghost().Small().Disabled(m.repository == nil || m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
 					m.startRemote("pull")
@@ -920,7 +1205,7 @@ func (m *Model) paintTop(f *flex.Frame) {
 }
 
 func (m *Model) paintNavigation(f *flex.Frame) {
-	icons := [...]ui.Icon{GitCommitHorizontal, List, GitBranch, Archive, Tag, Folder}
+	icons := [...]ui.Icon{GitCommitHorizontal, List, GitBranch, Archive, Tag, Folder, Tag}
 	f.Column().Width(44).FillHeight().Pad(5).Gap(5).Background(ui.RGB(34, 36, 42)).Children(func() {
 		for i, action := range keymap.Actions {
 			background := ui.RGB(34, 36, 42)
@@ -936,6 +1221,9 @@ func (m *Model) paintNavigation(f *flex.Frame) {
 			})
 			if row.Clicked() {
 				m.Active = action.ID
+				if action.ID == keymap.ShowStash {
+					m.loadStashes()
+				}
 				if action.ID == keymap.ShowLog && m.repository != nil && m.logHasMore && len(m.commits) == 0 {
 					m.loadLog()
 				}
@@ -946,6 +1234,10 @@ func (m *Model) paintNavigation(f *flex.Frame) {
 
 func (m *Model) paintContent(f *flex.Frame) {
 	text := m.Language.Text
+	if m.Active == keymap.ShowSettings {
+		m.paintSettings(f)
+		return
+	}
 	if m.Active == keymap.ShowRepositories || m.repository == nil {
 		m.paintRepository(f)
 		return
@@ -962,6 +1254,14 @@ func (m *Model) paintContent(f *flex.Frame) {
 		m.paintBranches(f)
 		return
 	}
+	if m.Active == keymap.ShowStash {
+		m.paintStashes(f)
+		return
+	}
+	if m.Active == keymap.ShowTags {
+		m.paintTags(f)
+		return
+	}
 	f.Column().Fill().Pad(16).Gap(10).Children(func() {
 		f.Text(text(keymap.Actions[m.Active].Name)).FontSize(15).Bold()
 		f.Divider()
@@ -970,6 +1270,42 @@ func (m *Model) paintContent(f *flex.Frame) {
 			f.Text(text(i18n.SelectRepository)).Muted()
 		})
 		f.Spacer()
+	})
+}
+
+func (m *Model) paintSettings(f *flex.Frame) {
+	text := m.Language.Text
+	f.Column().Fill().Pad(18).Gap(10).Children(func() {
+		f.Text(text(i18n.Settings)).Bold().FontSize(15)
+		f.Divider()
+		f.Row().FillWidth().Height(34).Items(flex.Center).Gap(10).Children(func() {
+			f.Text(text(i18n.LanguageSetting)).Width(180).FontSize(12)
+			english := text(i18n.LanguageSetting) + ": English"
+			chinese := text(i18n.LanguageSetting) + ": 简体中文"
+			if f.Button(settingsLanguageID, english).Ghost().Small().Clicked() {
+				m.Language = i18n.English
+				m.saveAppSettings()
+			}
+			if f.Button(tree.ID(feature, "settings-language-zh"), chinese).Ghost().Small().Clicked() {
+				m.Language = i18n.Chinese
+				m.saveAppSettings()
+			}
+		})
+		f.Row().FillWidth().Height(34).Items(flex.Center).Gap(10).Children(func() {
+			f.Text(text(i18n.PullDefault)).Width(180).FontSize(12)
+			for index, key := range []i18n.Key{i18n.PullMerge, i18n.PullRebase, i18n.PullFFOnly} {
+				label := text(key)
+				if int(m.pullPolicy) == index {
+					label += " *"
+				}
+				id := tree.ID(feature, []string{"settings-pull-merge", "settings-pull-rebase", "settings-pull-ff-only"}[index])
+				if f.Button(id, label).Ghost().Small().Clicked() {
+					m.pullPolicy = repo.PullPolicy(index)
+					m.saveAppSettings()
+				}
+			}
+		})
+		f.Text(text(i18n.Theme)).Muted().FontSize(11)
 	})
 }
 
@@ -1262,6 +1598,7 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 			}
 			if f.Button(treeModeID, treeLabel).Ghost().Small().Clicked() {
 				m.treeMode = true
+				m.saveRepositorySettings()
 			}
 			flatLabel := text(i18n.FlatView)
 			if !m.treeMode {
@@ -1269,6 +1606,7 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 			}
 			if f.Button(flatModeID, flatLabel).Ghost().Small().Clicked() {
 				m.treeMode = false
+				m.saveRepositorySettings()
 			}
 		})
 		f.Divider()
@@ -1284,8 +1622,11 @@ func (m *Model) paintChangesSidebar(f *flex.Frame) {
 			}
 		})
 		f.Divider()
-		f.Column().FillWidth().Height(180).Pad(8).Gap(6).Children(func() {
+		f.Column().FillWidth().Height(232).Pad(8).Gap(6).Children(func() {
 			f.Textarea(m.message.snapshot(messageID, text(i18n.CommitMessage))).FillWidth().Height(68)
+			if f.Checkbox(amendID, m.amend).Label(text(i18n.Amend)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+				m.amend = !m.amend
+			}
 			if len(m.messageHistory) > 0 {
 				if index, ok := f.Select(tree.Sub(feature, tree.Name("commit-message-history-options")), &m.messageHistorySelect, m.messageLabels, m.selectedHistory).Placeholder(text(i18n.CommitMessageHistory)).Small().Picked(); ok {
 					m.selectedHistory = index
@@ -1344,6 +1685,18 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 		}
 		file := m.status.Files[m.selected]
 		f.Row().FillWidth().Gap(8).Items(flex.Center).Children(func() {
+			if file.Conflict {
+				if f.Button(tree.ID(feature, "accept-current"), text(i18n.AcceptCurrent)).Small().Disabled(m.busy).Clicked() {
+					m.resolveConflict(file.Path, "ours")
+				}
+				if f.Button(tree.ID(feature, "accept-incoming"), text(i18n.AcceptIncoming)).Small().Disabled(m.busy).Clicked() {
+					m.resolveConflict(file.Path, "theirs")
+				}
+				if f.Button(tree.ID(feature, "accept-both"), text(i18n.AcceptBoth)).Small().Disabled(m.busy).Clicked() {
+					m.resolveConflict(file.Path, "both")
+				}
+				return
+			}
 			if f.Button(stageID, text(i18n.StageFile)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || (file.Worktree == '.' && !file.Untracked)).Clicked() {
 				m.write("stage", file.Path, "")
 			}
@@ -1482,6 +1835,128 @@ func (m *Model) paintChangesDiff(f *flex.Frame) {
 	}
 }
 
+func (m *Model) resolveConflict(file, side string) {
+	if m.repository == nil || m.busy {
+		return
+	}
+	m.busy, m.activeOperation, m.operationError = true, "resolve-conflict", ""
+	m.mailbox.ResolveConflict(m.ctx, m.repository, file, side, m.invalidator.Invalidate)
+}
+
+func (m *Model) paintStashes(f *flex.Frame) {
+	text := m.Language.Text
+	f.Column().Fill().Pad(12).Gap(8).Children(func() {
+		f.Text(text(i18n.Stash)).Bold().FontSize(14)
+		f.Row().FillWidth().Gap(6).Children(func() {
+			if f.Field(&m.stashMessage, stashMessageID, text(i18n.StashMessage), "").Grow(1).Submitted() {
+				m.stashWrite("save", "", m.stashMessage.Text())
+			}
+			if f.Button(stashSaveID, text(i18n.SaveStash)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+				m.stashWrite("save", "", m.stashMessage.Text())
+			}
+		})
+		if f.Checkbox(stashUntrackedID, m.stashIncludeUntracked).Label(text(i18n.IncludeUntracked)).Small().Clicked() {
+			m.stashIncludeUntracked = !m.stashIncludeUntracked
+		}
+		f.Divider()
+		f.Row().Fill().Grow(1).Gap(10).Children(func() {
+			f.ScrollArea(tree.ID(feature, "stash-list")).Width(310).FillHeight().Children(func() {
+				for index, stash := range m.stashes {
+					label := fmt.Sprintf("%s  %s", stash.Ref, stash.Subject)
+					id := tree.Sub(feature, tree.Name("stash-rows")).At(index)
+					if f.Button(id, label).Ghost().Small().Clicked() {
+						m.selectStash(stash)
+					}
+				}
+			})
+			f.Divider()
+			f.Column().Fill().Gap(6).Children(func() {
+				selected := -1
+				for index := range m.stashes {
+					if m.stashes[index].SHA == m.selectedStash {
+						selected = index
+					}
+				}
+				if selected >= 0 {
+					stash := m.stashes[selected]
+					f.Text(strings.Join([]string{stash.Branch, stash.Date}, "  ")).Muted().FontSize(11)
+					f.Row().FillWidth().Gap(5).Children(func() {
+						for _, operation := range []struct {
+							id   ui.ID
+							key  i18n.Key
+							name string
+						}{{tree.ID(feature, "stash-apply"), i18n.ApplyStash, "apply"}, {tree.ID(feature, "stash-pop"), i18n.PopStash, "pop"}} {
+							if f.Button(operation.id, text(operation.key)).Small().Disabled(m.busy).Clicked() {
+								m.stashWrite(operation.name, stash.Ref, "")
+							}
+						}
+						if f.Button(tree.ID(feature, "stash-branch"), text(i18n.BranchFromStash)).Small().Disabled(m.busy).Clicked() && strings.TrimSpace(m.stashBranchName.Text()) != "" {
+							m.stashWrite("branch", stash.Ref, strings.TrimSpace(m.stashBranchName.Text()))
+						}
+						if m.stashPending == stash.Ref {
+							if f.Button(stashDropConfirmID, text(i18n.ConfirmDiscard)).Destructive().Small().Clicked() {
+								m.stashWrite("drop", stash.Ref, "")
+							}
+						} else if f.Button(tree.ID(feature, "stash-drop"), text(i18n.DropStash)).Destructive().Small().Clicked() {
+							m.stashPending = stash.Ref
+						}
+					})
+					f.Field(&m.stashBranchName, stashBranchNameID, text(i18n.LocalBranchName), "").FillWidth()
+				}
+				f.ScrollArea(tree.ID(feature, "stash-diff")).Grow(1).Children(func() {
+					for _, line := range strings.Split(m.stashDiff, "\n") {
+						f.Text(line).Mono().FontSize(11)
+					}
+				})
+			})
+		})
+	})
+}
+
+func (m *Model) paintTags(f *flex.Frame) {
+	text := m.Language.Text
+	f.Column().Fill().Pad(12).Gap(8).Children(func() {
+		f.Text(text(i18n.Tags)).Bold().FontSize(14)
+		f.Row().FillWidth().Gap(6).Children(func() {
+			f.Field(&m.tagName, tagNameID, text(i18n.TagName), "").Grow(1)
+			f.Field(&m.tagTarget, tagTargetID, text(i18n.HistoryTarget), "HEAD").Grow(1)
+		})
+		f.Row().FillWidth().Gap(6).Children(func() {
+			f.Field(&m.tagMessage, tagMessageID, text(i18n.TagMessage), "").Grow(1)
+			if f.Button(tree.ID(feature, "tag-create"), text(i18n.CreateTag)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || strings.TrimSpace(m.tagName.Text()) == "").Clicked() {
+				m.tagWrite("create", strings.TrimSpace(m.tagName.Text()), strings.TrimSpace(m.tagTarget.Text()), m.tagMessage.Text())
+			}
+		})
+		f.Divider()
+		f.ScrollArea(tree.ID(feature, "tag-list")).Grow(1).Children(func() {
+			for index, ref := range m.refs {
+				if !ref.Tag {
+					continue
+				}
+				f.Row().FillWidth().Height(28).Gap(6).Items(flex.Center).Children(func() {
+					f.Text(ref.Name).Grow(1)
+					f.Text(ref.SHA[:min(8, len(ref.SHA))]).Mono().Muted().FontSize(11)
+					if m.tagPending == ref.Name {
+						if f.Button(tree.ID(feature, "tag-delete-confirm"), text(i18n.ConfirmDeleteTag)).Destructive().Small().Clicked() {
+							m.tagWrite("delete", ref.Name, "", "")
+						}
+					} else if f.Button(tree.Sub(feature, tree.Name("tag-delete")).At(index), text(i18n.DeleteBranch)).Ghost().Small().Clicked() {
+						m.tagPending = ref.Name
+					}
+				})
+			}
+		})
+	})
+}
+
+func (m *Model) tagWrite(operation, name, target, message string) {
+	if m.repository == nil || m.busy {
+		return
+	}
+	m.busy, m.activeOperation, m.operationError = true, "tag-"+operation, ""
+	m.mailbox.TagWrite(m.ctx, m.repository, operation, name, target, message, m.invalidator.Invalidate)
+}
+
 func (m *Model) paintChangesTree(f *flex.Frame) {
 	indexes := make([]int, 0, len(m.status.Files))
 	for index := range m.status.Files {
@@ -1557,6 +2032,7 @@ func (m *Model) paintChangesTree(f *flex.Frame) {
 		}
 		row := f.Row().FillWidth().Height(26).PadSides(0, 4, 0, float32(7+depth*12)).Gap(5).Items(flex.Center).
 			Background(color).HoverBackground(ui.RGB(47, 51, 59)).Hit(id, label).Children(func() {
+			f.Text(fileStatusLabel(file)).Mono().FontSize(10).Color(fileStatusColor(file))
 			f.Text(label).FontSize(12).Ellipsis()
 		})
 		if row.Clicked() {
@@ -1582,7 +2058,7 @@ func (m *Model) paintLog(f *flex.Frame) {
 	text := m.Language.Text
 	f.Row().Fill().Children(func() {
 		branchWidth := min(max(m.logBranchesSplit.Pos, float32(110)), max(float32(110), m.width*0.18))
-		showBranchSidebar := m.width >= 1000
+		showBranchSidebar := m.width >= 1000 && m.panelVisible("log-branches")
 		if showBranchSidebar {
 			f.Column().Width(branchWidth).FillHeight().Pad(7).Gap(5).Background(ui.RGB(29, 31, 36)).Children(func() {
 				f.Text(text(i18n.Branches)).Bold().FontSize(11).Ellipsis()
@@ -1622,13 +2098,130 @@ func (m *Model) paintLog(f *flex.Frame) {
 			})
 			f.Splitter(tree.ID(feature, "log-branches-split"), &m.logBranchesSplit).Mins(105, 260)
 		}
-		f.Column().Grow(1).FillHeight().Pad(8).Gap(6).Children(func() {
+		f.Column().Grow(1).FillHeight().Pad(4).Gap(4).Children(func() {
 			listWidth := max(float32(250), m.width-branchWidth-350)
 			label := text(i18n.Log)
 			if m.logFilter.Ref != "" {
 				label = m.logFilter.Ref
 			}
-			f.Text(label).Bold().FontSize(14).PadY(4).Ellipsis()
+			f.Row().FillWidth().Height(24).Items(flex.Center).Gap(5).Children(func() {
+				f.Text(label).Bold().FontSize(14).PadY(2).Ellipsis()
+				f.Spacer()
+				if f.Checkbox(tree.ID(feature, "toggle-log-branches"), m.panelVisible("log-branches")).Label(text(i18n.Branches)).Small().Clicked() {
+					m.setPanelVisible("log-branches", !m.panelVisible("log-branches"))
+				}
+				if f.Checkbox(tree.ID(feature, "toggle-log-details"), m.panelVisible("log-details")).Label(text(i18n.CommitFiles)).Small().Clicked() {
+					m.setPanelVisible("log-details", !m.panelVisible("log-details"))
+				}
+			})
+			if m.status.Operation.Kind != git.OperationNone {
+				f.Row().FillWidth().Height(30).Gap(6).Items(flex.Center).Children(func() {
+					f.Text(text(i18n.OperationInProgress)).Color(ui.RGB(222, 175, 94)).FontSize(12)
+					if m.status.Operation.Target != "" {
+						f.Text(m.status.Operation.Target[:min(8, len(m.status.Operation.Target))]).Mono().FontSize(11)
+					}
+					if m.status.Operation.Current > 0 && m.status.Operation.Remaining > 0 {
+						f.Text(fmt.Sprintf("%s %d/%d", text(i18n.OperationProgress), m.status.Operation.Current, m.status.Operation.Current+m.status.Operation.Remaining)).Muted().FontSize(11)
+					}
+					conflictsRemain := slices.ContainsFunc(m.status.Files, func(file git.File) bool { return file.Conflict })
+					if f.Button(continueOperationID, text(i18n.ContinueOperation)).Small().Disabled(m.busy || conflictsRemain || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+						m.resolveOperation("continue")
+					}
+					if m.status.Operation.Kind == git.OperationRebase || m.status.Operation.Kind == git.OperationCherryPick {
+						if f.Button(skipOperationID, text(i18n.SkipOperation)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+							m.resolveOperation("skip")
+						}
+					}
+					if f.Button(abortOperationID, text(i18n.AbortOperation)).Destructive().Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite).Clicked() {
+						m.resolveOperation("abort")
+					}
+				})
+			} else {
+				if m.width < 1000 {
+					if f.Button(tree.ID(feature, "history-tools-toggle"), text(i18n.HistoryTarget)).Small().Clicked() {
+						m.historyToolsOpen = !m.historyToolsOpen
+					}
+				}
+				if m.width >= 1000 || m.historyToolsOpen {
+					f.Row().FillWidth().Height(26).Gap(4).Children(func() {
+						placeholder := ""
+						if m.historyAction == "cherry-pick" {
+							placeholder = text(i18n.CherryPickTarget)
+						}
+						if f.Field(&m.historyTarget, historyTargetID, text(i18n.HistoryTarget), placeholder).Grow(1).Submitted() && m.historyAction != "" {
+							m.planHistory(m.historyAction)
+						}
+					})
+					f.Row().FillWidth().Height(26).Gap(4).Children(func() {
+						actions := []string{text(i18n.MergeBranch), text(i18n.RebaseOnto), text(i18n.CherryPickCommit), text(i18n.RevertCommit), text(i18n.ResetSoft), text(i18n.ResetMixed), text(i18n.ResetHard)}
+						if index, ok := f.Select(tree.Sub(feature, tree.Name("history-action")), &m.historyActionSelect, actions, -1).Placeholder(text(i18n.Search)).Small().Picked(); ok {
+							m.historyAction = []string{"merge", "rebase", "cherry-pick", "revert", "reset-soft", "reset-mixed", "reset-hard"}[index]
+						}
+						if f.Button(tree.ID(feature, "history-preview"), text(i18n.Search)).Small().Disabled(m.busy || !m.Git.Version.Capabilities().CanWrite || m.historyAction == "" || strings.TrimSpace(m.historyTarget.Text()) == "").Clicked() {
+							m.planHistory(m.historyAction)
+						}
+					})
+				}
+			}
+			if m.historyPlan != nil {
+				f.Column().FillWidth().Gap(4).Pad(7).Background(ui.RGB(45, 42, 36)).Children(func() {
+					f.Text(fmt.Sprintf("%s: %s -> %s", text(i18n.ConfirmHistoryOperation), m.historyPlan.Action, m.historyPlan.Resolved[:min(8, len(m.historyPlan.Resolved))])).FontSize(12)
+					if len(m.historyPlan.DirtyFiles) > 0 {
+						f.Text(fmt.Sprintf("%s %d", text(i18n.CheckoutChangesWarning), len(m.historyPlan.DirtyFiles))).FontSize(11)
+						for _, file := range m.historyPlan.DirtyFiles[:min(5, len(m.historyPlan.DirtyFiles))] {
+							f.Text(file).Mono().FontSize(11).Ellipsis()
+						}
+						if len(m.historyPlan.DirtyFiles) > 5 {
+							f.Text(fmt.Sprintf("+%d", len(m.historyPlan.DirtyFiles)-5)).Muted().FontSize(11)
+						}
+					}
+					if m.historyPlan.Action == "reset-hard" && len(m.historyPlan.DataLossFiles) > 0 {
+						f.Text(text(i18n.HistoryDataLoss)).Color(ui.RGB(224, 94, 86)).FontSize(11)
+						for _, file := range m.historyPlan.DataLossFiles[:min(5, len(m.historyPlan.DataLossFiles))] {
+							f.Text(file).Mono().FontSize(11).Ellipsis()
+						}
+						if len(m.historyPlan.DataLossFiles) > 5 {
+							f.Text(fmt.Sprintf("+%d", len(m.historyPlan.DataLossFiles)-5)).Muted().FontSize(11)
+						}
+					}
+					if len(m.historyPlan.Commits) > 0 {
+						f.Text(fmt.Sprintf("%s %d", text(i18n.HistoryCommitsAffected), len(m.historyPlan.Commits))).Muted().FontSize(11)
+						for _, commit := range m.historyPlan.Commits[:min(5, len(m.historyPlan.Commits))] {
+							f.Text(fmt.Sprintf("%s %s", commit.SHA[:8], commit.Subject)).FontSize(11).Ellipsis()
+						}
+						if len(m.historyPlan.Commits) > 5 {
+							f.Text(fmt.Sprintf("+%d", len(m.historyPlan.Commits)-5)).Muted().FontSize(11)
+						}
+					}
+					f.Row().FillWidth().Gap(6).Children(func() {
+						if f.Button(historyConfirmID, text(i18n.ConfirmHistoryOperation)).Small().Destructive().Disabled(m.busy).Clicked() {
+							plan := *m.historyPlan
+							m.historyPlan = nil
+							m.busy = true
+							m.activeOperation = "history-operation"
+							m.mailbox.ExecuteHistory(m.ctx, m.repository, plan, m.invalidator.Invalidate)
+						}
+						if f.Button(tree.ID(feature, "history-cancel"), text(i18n.Cancel)).Ghost().Small().Clicked() {
+							m.historyPlan = nil
+						}
+					})
+				})
+			}
+			if m.operationConfirm != "" {
+				key, action := i18n.ConfirmAbortOperation, "abort"
+				if m.operationConfirm == "skip" {
+					key, action = i18n.ConfirmSkipOperation, "skip"
+				}
+				f.Row().FillWidth().Gap(6).Items(flex.Center).Children(func() {
+					f.Text(text(key)).FontSize(11)
+					if f.Button(tree.ID(feature, "operation-confirm"), text(i18n.ConfirmHistoryOperation)).Destructive().Small().Clicked() {
+						m.executeOperation(action)
+					}
+					if f.Button(tree.ID(feature, "operation-cancel"), text(i18n.Cancel)).Ghost().Small().Clicked() {
+						m.operationConfirm = ""
+					}
+				})
+			}
 			f.Row().FillWidth().Height(29).Gap(4).Children(func() {
 				if f.Field(&m.logQuery, logFilterID, text(i18n.MessageFilter), text(i18n.MessageFilter)).Grow(1).Submitted() {
 					m.applyLogFilter()
@@ -1679,15 +2272,20 @@ func (m *Model) paintLog(f *flex.Frame) {
 				}
 				if len(m.commits) > 0 {
 					columns := compactCommitColumns[:]
-					if listWidth >= 440 {
-						m.logColumns = [5]components.TableColumn{
-							{Width: 84}, {Width: max(listWidth-16-84-96-78-72, 120)},
-							{Width: 96}, {Width: 78}, {Width: 72},
+					graphWidth := m.graphWidth
+					if graphWidth == 0 {
+						graphWidth = 84
+					}
+					if listWidth >= graphWidth+400 {
+						m.logColumns = [6]components.TableColumn{
+							{Width: graphWidth}, {Width: max(listWidth-16-graphWidth-82-82-78-72, 120)},
+							{Width: 82}, {Width: 82}, {Width: 78}, {Width: 72},
 						}
 						columns = m.logColumns[:]
 					}
 					m.logTableBounds = f.Table(&m.logTable, flex.TableSpec{
 						Rows: logScope, Header: logHeaderScope, Columns: columns, Source: &m.logSource,
+						Headers:   []string{"", "", text(i18n.AuthorColumn), text(i18n.CommitterColumn), "", ""},
 						RowHeight: 25,
 					}).FillWidth().Height(max(float32(55), m.height-310))
 					if row, ok := m.logTableBounds.RowClicked(); ok && row < len(m.commits) {
@@ -1756,12 +2354,14 @@ func (m *Model) paintLog(f *flex.Frame) {
 					m.commitDiffSlot = f.Slot().Grow(1)
 				}
 			}
-			f.Divider()
-			f.ScrollArea(logDetailsID).Height(112).Children(func() {
-				for line := range strings.SplitSeq(m.commitMessage, "\n") {
-					f.Text(line).FontSize(12)
-				}
-			})
+			if m.panelVisible("log-details") {
+				f.Divider()
+				f.ScrollArea(logDetailsID).Height(112).Children(func() {
+					for line := range strings.SplitSeq(m.commitMessage, "\n") {
+						f.Text(line).FontSize(12)
+					}
+				})
+			}
 		})
 	})
 }
@@ -1832,11 +2432,49 @@ func (m *Model) paintGroup(f *flex.Frame, title i18n.Key, staged bool, include f
 		}
 		row := f.Row().FillWidth().Height(26).PadX(7).Gap(5).Items(flex.Center).Radius(3).
 			Background(color).HoverBackground(ui.RGB(47, 51, 59)).Hit(id, label).Children(func() {
+			f.Text(fileStatusLabel(file)).Mono().FontSize(10).Color(fileStatusColor(file))
 			f.Text(label).FontSize(12).Ellipsis()
 		})
 		if row.Clicked() {
 			m.selectFile(i, staged)
 		}
+	}
+}
+
+func fileStatusLabel(file git.File) string {
+	if file.Conflict {
+		return "U"
+	}
+	if file.Untracked {
+		return "?"
+	}
+	if file.Index == 'R' || file.Worktree == 'R' {
+		return "R"
+	}
+	if file.Index == 'D' || file.Worktree == 'D' {
+		return "D"
+	}
+	if file.Index == 'A' || file.Worktree == 'A' {
+		return "A"
+	}
+	if file.Index == 'M' || file.Worktree == 'M' {
+		return "M"
+	}
+	return " "
+}
+
+func fileStatusColor(file git.File) ui.Color {
+	switch fileStatusLabel(file) {
+	case "U":
+		return ui.RGB(224, 94, 86)
+	case "?", "A":
+		return ui.RGB(112, 190, 130)
+	case "D":
+		return ui.RGB(224, 94, 86)
+	case "M", "R":
+		return ui.RGB(222, 175, 94)
+	default:
+		return ui.RGB(150, 155, 164)
 	}
 }
 
@@ -1853,6 +2491,9 @@ func (m *Model) paintStatus(f *flex.Frame) {
 			f.Text(text(i18n.OperationFailed)).Color(ui.RGBA(160, 49, 46, 1)).FontSize(12)
 			if f.Button(errorDetailsID, text(i18n.ErrorDetails)).Ghost().Clicked() {
 				m.showErrorDetails = !m.showErrorDetails
+			}
+			if m.showErrorDetails {
+				f.Text(m.operationError).Muted().Mono().FontSize(11).Ellipsis()
 			}
 		} else if m.busy {
 			label := text(i18n.Working)

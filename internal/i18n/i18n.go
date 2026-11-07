@@ -105,9 +105,53 @@ const (
 	RestoreSelectedHunks
 	ConfirmRestoreHunks
 	ShowIgnored
+	AuthorColumn
+	CommitterColumn
+	ResetSoft
+	ResetMixed
+	ResetHard
+	HistoryTarget
+	MergeBranch
+	RebaseOnto
+	ConfirmHistoryOperation
+	HistoryCommitsAffected
+	OperationInProgress
+	ContinueOperation
+	AbortOperation
+	CherryPickCommit
+	RevertCommit
+	SkipOperation
+	ConfirmAbortOperation
+	ConfirmSkipOperation
+	HistoryDataLoss
+	OperationProgress
+	CherryPickTarget
+	SaveStash
+	StashMessage
+	IncludeUntracked
+	ApplyStash
+	PopStash
+	DropStash
+	BranchFromStash
+	AcceptCurrent
+	AcceptIncoming
+	AcceptBoth
+	CurrentVersion
+	IncomingVersion
+	StashSaved
+	Settings
+	LanguageSetting
+	PullDefault
+	Theme
+	SaveSettings
+	TagName
+	TagMessage
+	TagTarget
+	CreateTag
+	ConfirmDeleteTag
 )
 
-var stringsByLanguage = [...][ShowIgnored + 1]string{
+var stringsByLanguage = [...][ConfirmDeleteTag + 1]string{
 	English: {
 		"Git Workbench", "Repository", "No repository", "Open repository", "Branch", "No branch",
 		"Fetch", "Pull", "Push", "Search", "Changes", "Log", "Branches", "Stash", "Tags",
@@ -139,6 +183,13 @@ var stringsByLanguage = [...][ShowIgnored + 1]string{
 		"Amend", "Commit + Push", "Recent commit messages",
 		"Discard", "Discard these working tree changes?", "Tree", "Flat",
 		"Apply selected hunks", "Restore selected hunks", "Restore selected working tree changes?", "Show ignored files",
+		"Author", "Committer",
+		"Reset soft", "Reset mixed", "Reset hard", "Target commit or ref", "Merge branch", "Rebase onto",
+		"Confirm Git operation", "Commits affected:", "Git operation in progress", "Continue", "Abort",
+		"Cherry-pick", "Revert", "Skip", "Abort this Git operation and discard its in-progress changes?", "Skip the current commit and continue?",
+		"Hard reset will discard:",
+		"Progress",
+		"Commit SHAs or refs, in order (comma or space separated)",
 	},
 	Chinese: {
 		"Git 工作台", "仓库", "未打开仓库", "打开仓库", "分支", "无分支",
@@ -171,7 +222,67 @@ var stringsByLanguage = [...][ShowIgnored + 1]string{
 		"修改上次提交", "提交 + 推送", "最近提交消息",
 		"丢弃", "确认丢弃这些工作区更改？", "目录树", "扁平",
 		"应用所选区块", "还原所选区块", "确认还原所选工作区更改？", "显示忽略文件",
+		"作者", "提交者",
+		"软重置", "混合重置", "硬重置", "目标提交或引用", "合并分支", "变基到",
+		"确认 Git 操作", "受影响的提交：", "Git 操作进行中", "继续", "中止",
 	},
+}
+
+func init() {
+	stringsByLanguage[English][SaveStash] = "Save stash"
+	stringsByLanguage[English][StashMessage] = "Stash message"
+	stringsByLanguage[English][IncludeUntracked] = "Include untracked files"
+	stringsByLanguage[English][ApplyStash] = "Apply"
+	stringsByLanguage[English][PopStash] = "Pop"
+	stringsByLanguage[English][DropStash] = "Drop"
+	stringsByLanguage[English][BranchFromStash] = "Branch"
+	stringsByLanguage[English][AcceptCurrent] = "Accept Current"
+	stringsByLanguage[English][AcceptIncoming] = "Accept Incoming"
+	stringsByLanguage[English][AcceptBoth] = "Accept Both"
+	stringsByLanguage[English][CurrentVersion] = "Current version"
+	stringsByLanguage[English][IncomingVersion] = "Incoming version"
+	stringsByLanguage[English][StashSaved] = "Saved changes"
+	stringsByLanguage[English][Settings] = "Settings"
+	stringsByLanguage[English][LanguageSetting] = "Language"
+	stringsByLanguage[English][PullDefault] = "Default pull policy"
+	stringsByLanguage[English][Theme] = "Theme"
+	stringsByLanguage[English][SaveSettings] = "Save settings"
+	stringsByLanguage[English][TagName] = "Tag name"
+	stringsByLanguage[English][TagMessage] = "Annotation message (optional)"
+	stringsByLanguage[English][TagTarget] = "Target commit"
+	stringsByLanguage[English][CreateTag] = "Create tag"
+	stringsByLanguage[English][ConfirmDeleteTag] = "Confirm delete tag"
+	stringsByLanguage[Chinese][SaveStash] = "保存贮藏"
+	stringsByLanguage[Chinese][StashMessage] = "贮藏说明"
+	stringsByLanguage[Chinese][IncludeUntracked] = "包含未跟踪文件"
+	stringsByLanguage[Chinese][ApplyStash] = "应用"
+	stringsByLanguage[Chinese][PopStash] = "弹出"
+	stringsByLanguage[Chinese][DropStash] = "删除"
+	stringsByLanguage[Chinese][BranchFromStash] = "创建分支"
+	stringsByLanguage[Chinese][AcceptCurrent] = "接受当前版本"
+	stringsByLanguage[Chinese][AcceptIncoming] = "接受传入版本"
+	stringsByLanguage[Chinese][AcceptBoth] = "接受双方版本"
+	stringsByLanguage[Chinese][CurrentVersion] = "当前版本"
+	stringsByLanguage[Chinese][IncomingVersion] = "传入版本"
+	stringsByLanguage[Chinese][StashSaved] = "已保存更改"
+	stringsByLanguage[Chinese][Settings] = "设置"
+	stringsByLanguage[Chinese][LanguageSetting] = "界面语言"
+	stringsByLanguage[Chinese][PullDefault] = "默认拉取策略"
+	stringsByLanguage[Chinese][Theme] = "主题"
+	stringsByLanguage[Chinese][SaveSettings] = "保存设置"
+	stringsByLanguage[Chinese][TagName] = "标签名称"
+	stringsByLanguage[Chinese][TagMessage] = "注释（可选）"
+	stringsByLanguage[Chinese][TagTarget] = "目标提交"
+	stringsByLanguage[Chinese][CreateTag] = "创建标签"
+	stringsByLanguage[Chinese][ConfirmDeleteTag] = "确认删除标签"
+	stringsByLanguage[Chinese][HistoryDataLoss] = "硬重置将丢弃："
+	stringsByLanguage[Chinese][OperationProgress] = "进度"
+	stringsByLanguage[Chinese][CherryPickTarget] = "提交 SHA 或引用，按拣选顺序输入（逗号或空格分隔）"
+	stringsByLanguage[Chinese][CherryPickCommit] = "拣选提交"
+	stringsByLanguage[Chinese][RevertCommit] = "回退提交"
+	stringsByLanguage[Chinese][SkipOperation] = "跳过"
+	stringsByLanguage[Chinese][ConfirmAbortOperation] = "中止当前 Git 操作并丢弃其进行中的更改？"
+	stringsByLanguage[Chinese][ConfirmSkipOperation] = "跳过当前提交并继续？"
 }
 
 func FromPreferred(languages []string) Language {
@@ -187,7 +298,7 @@ func FromPreferred(languages []string) Language {
 }
 
 func (language Language) Text(key Key) string {
-	if language > Chinese || key > ShowIgnored {
+	if language > Chinese || key > CherryPickTarget {
 		return ""
 	}
 	return stringsByLanguage[language][key]

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -20,13 +22,31 @@ type File struct {
 }
 
 type Status struct {
-	Root     string
-	Branch   string
-	Head     string
-	Ahead    int
-	Behind   int
-	HasTrack bool
-	Files    []File
+	Root      string
+	Branch    string
+	Head      string
+	Ahead     int
+	Behind    int
+	HasTrack  bool
+	Files     []File
+	Operation OperationState
+}
+
+type OperationKind uint8
+
+const (
+	OperationNone OperationKind = iota
+	OperationMerge
+	OperationRebase
+	OperationCherryPick
+	OperationRevert
+)
+
+type OperationState struct {
+	Kind      OperationKind
+	Target    string
+	Current   int
+	Remaining int
 }
 
 func ReadIgnored(ctx context.Context, runner gitexec.Runner, directory string) ([]string, error) {
@@ -58,7 +78,78 @@ func ReadStatus(ctx context.Context, runner gitexec.Runner, directory string) (S
 		return Status{}, err
 	}
 	status.Root = path
+	status.Operation, err = ReadOperationState(ctx, runner, path)
+	if err != nil {
+		return Status{}, err
+	}
 	return status, nil
+}
+
+func ReadOperationState(ctx context.Context, runner gitexec.Runner, directory string) (OperationState, error) {
+	markers := []struct {
+		kind OperationKind
+		name string
+	}{
+		{OperationRebase, "rebase-merge"},
+		{OperationRebase, "rebase-apply"},
+		{OperationMerge, "MERGE_HEAD"},
+		{OperationCherryPick, "CHERRY_PICK_HEAD"},
+		{OperationRevert, "REVERT_HEAD"},
+	}
+	for _, marker := range markers {
+		result, err := runner.Run(ctx, gitexec.Command{Dir: directory, Args: []string{"rev-parse", "--git-path", marker.name}})
+		if err != nil {
+			return OperationState{}, fmt.Errorf("locate Git operation state: %w: %s", err, result.Stderr)
+		}
+		name := strings.TrimSpace(string(result.Stdout))
+		if !filepath.IsAbs(name) {
+			name = filepath.Join(directory, filepath.FromSlash(name))
+		}
+		info, err := os.Stat(name)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return OperationState{}, fmt.Errorf("read Git operation state %s: %w", marker.name, err)
+		}
+		state := OperationState{Kind: marker.kind}
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(name)
+			if err != nil {
+				return OperationState{}, fmt.Errorf("read Git operation target %s: %w", marker.name, err)
+			}
+			state.Target = strings.TrimSpace(string(data))
+		}
+		if marker.kind == OperationRebase {
+			state.Current, state.Remaining = readRebaseProgress(name)
+		}
+		return state, nil
+	}
+	return OperationState{}, nil
+}
+
+func readRebaseProgress(marker string) (int, int) {
+	root := marker
+	if filepath.Base(root) != "rebase-merge" && filepath.Base(root) != "rebase-apply" {
+		return 0, 0
+	}
+	done := 0
+	if data, err := os.ReadFile(filepath.Join(root, "done")); err == nil {
+		done = len(bytes.Split(bytes.TrimSpace(data), []byte{'\n'}))
+		if len(bytes.TrimSpace(data)) == 0 {
+			done = 0
+		}
+	}
+	remaining := 0
+	if data, err := os.ReadFile(filepath.Join(root, "git-rebase-todo")); err == nil {
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			line = bytes.TrimSpace(line)
+			if len(line) > 0 && line[0] != '#' {
+				remaining++
+			}
+		}
+	}
+	return done + 1, remaining
 }
 
 func ParseStatus(data []byte) (Status, error) {

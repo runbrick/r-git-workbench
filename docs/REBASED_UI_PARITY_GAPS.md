@@ -48,10 +48,10 @@
 | 刷新按钮位置 | 截图未见侧栏内独立刷新按钮 | tab 行右侧有常驻 Refresh 按钮 | 多了一个基线里没有的按钮，位置也不同 |
 | 树/扁平视图切换 | 截图未体现（可能在别处） | 单独一行两个常驻文字按钮"Tree View"/"Flat View" | 占了一整行，基线大概率是图标切换或右键菜单，密度不同 |
 | "Changes N files" 折叠标题 | 带复选框，可折叠，显示文件数 | `paintGroup` 只画 `"%s  %d"` 文字，**没有复选框，不可折叠** | 缺失复选框（对应"全部暂存/取消暂存"快捷操作，即 P1 清单 `Git.Stage.Add.All`）和折叠交互 |
-| 文件行状态图标 | 彩色字母徽标（M黄色、R蓝色等）+ 文件名 + 灰色小字后缀 | `f.Text(label)` 纯文字，**没有状态字母图标**，只靠分组标题区分 staged/unstaged/untracked | 明显缺失：规格 §4.2 和 UI.md §7 都要求"文件状态带字母徽标（M/A/D/R/U/?）"，当前完全没画，无障碍要求也未满足 |
+| 文件行状态图标 | 彩色字母徽标（M黄色、R蓝色等）+ 文件名 + 灰色小字后缀 | Changes 平铺行和目录树行均绘制状态字母（冲突 `!`，未跟踪 `?`，其余 M/A/D/R） | 已补齐字母状态标记；颜色仅作辅助，状态仍由字母表达。行高、徽标间距和视觉颜色仍待基线截图校准 |
 | 选中行高亮 | 蓝色背景 | `color = RGB(43,70,117)` | 已实现，颜色接近 |
 | "Unversioned Files" 折叠分组 | 有，带文件数 | 对应 `UntrackedFiles` 分组，同上缺复选框/折叠 | 同上问题 |
-| Amend 复选框+下拉+时钟图标 | 一行：复选框+下拉箭头+时钟图标 | **代码里找不到 Amend 相关的 UI 绘制**——`m.amend` 字段存在（`shell.go:114`），但 `paintChangesSidebar`/`paintChangesDiff` 都没有画出 Amend 复选框或切换入口 | 严重缺失：ROADMAP M5 记录"已实现 Amend"，但界面上找不到触发入口，是功能孤岛——后端/状态字段存在，UI 入口缺失 |
+| Amend 复选框+下拉+时钟图标 | 一行：复选框+下拉箭头+时钟图标 | Commit 面板已有可访问的 Amend 复选框，并控制 Commit 与 Commit and Push 的 amend 参数 | 原先记录的 P0 功能缺陷已修复；与基线下拉/时钟图标样式仍有差异 |
 | 提交消息输入框 | 大文本框 | `f.Textarea(...).FillWidth().Height(68)`，固定在 `Height(180)` 的 Column 里 | 基本一致，尺寸可能偏小 |
 | 提交消息历史下拉 | 截图未体现 | `f.Select(...).Placeholder(CommitMessageHistory)` | 多了一个基线没展示的历史选择器，需确认基线里历史消息走的是哪个入口 |
 | Commit / Commit and Push 按钮 | "Commit"蓝色主按钮 + "Commit and Push..."深色带下拉箭头按钮，右侧还有齿轮图标 | 两个按钮都有，**没有右侧齿轮图标（提交选项设置）**，Commit and Push 没有下拉箭头样式 | 缺失提交选项齿轮入口 |
@@ -82,7 +82,7 @@
 |---|---|---|---|
 | 顶部工具栏图标（撤销/历史/眼睛，右侧展开/关闭） | 一行图标按钮 | 不存在 | 缺失 |
 | 文件树"16 files"折叠标题+复选框 | 带复选框和文件计数，多级目录可展开 | `m.commitFiles` 用**扁平列表**渲染（`shell.go:1726`），每项是完整相对路径文本，**不是树形结构** | 明显缺失：基线是多级可展开目录树，cetacean 是扁平路径列表，且没有复用 Changes 区域的 `paintChangesTree` |
-| SHA+复制按钮 | 未强调复制交互方式 | `f.Text(sha[:8]).Mono()` + `f.Button(copySHAID, "Copy SHA").Ghost().Small()`，**该按钮没有 `.Clicked()` 处理逻辑**（`shell.go:1722`） | 功能性缺陷而非单纯视觉：按钮画出来了，点击后没有任何动作，是摆设按钮 |
+| SHA+复制按钮 | 未强调复制交互方式 | Copy SHA 按钮的 pointer handler 返回剪贴板文本；Driver 测试验证系统剪贴板等于所选完整 SHA | 已接通并有 Driver 覆盖；显示仍只展示短 SHA 属于视觉/信息层级差异 |
 | 提交详情：标题/作者链接/两个时间戳/"In N branches" | 多行结构化信息，作者和"Show all"是可点击蓝色链接 | `m.commitMessage` 整段文字按行输出到 `ScrollArea`（`shell.go:1760`），**没有单独解析作者/日期/所在分支数量的结构化展示** | 缺失结构化布局：基线把 commit 元数据拆成独立带样式的行，cetacean 把全部信息混在一个纯文本块里滚动显示 |
 | 文件 Diff 展示 | 未在截图中展开 | `m.commitDiffSlot` 用 `CodeDiff` 渲染 | 基本对应，已实现 |
 
